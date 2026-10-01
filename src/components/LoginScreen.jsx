@@ -4,6 +4,7 @@ import { matchLogin } from "../lib/store"
 
 export default function LoginScreen({ onLogin }) {
   const [login, setLogin] = useState("")
+  const [remember, setRemember] = useState(false)
   const [error, setError] = useState("")
 
   function submit(event) {
@@ -14,7 +15,7 @@ export default function LoginScreen({ onLogin }) {
       return
     }
     setError("")
-    onLogin(next)
+    onLogin(next, remember)
   }
 
   return (
@@ -56,6 +57,15 @@ export default function LoginScreen({ onLogin }) {
                 {error}
               </p>
             )}
+            <label className="mt-4 flex cursor-pointer items-center gap-3 text-sm text-stone-700">
+              <input
+                type="checkbox"
+                checked={remember}
+                onChange={(event) => setRemember(event.target.checked)}
+                className="size-4 accent-teal-800"
+              />
+              Zapamiętaj na tym urządzeniu
+            </label>
             <button
               type="submit"
               className="mt-4 w-full rounded-2xl bg-teal-800 px-4 py-3 text-sm font-semibold text-white transition hover:bg-teal-900"

@@ -45,9 +45,9 @@ export function matchLogin(raw) {
   return null
 }
 
-export function loadSession() {
+function readSession(storage) {
   try {
-    const parsed = JSON.parse(localStorage.getItem(SESSION_KEY) || "null")
+    const parsed = JSON.parse(storage.getItem(SESSION_KEY) || "null")
     if (parsed?.role === "admin" && parsed?.name === ADMIN_LOGIN) return parsed
     if (parsed?.role === "tutor" && TUTORS.includes(parsed?.name)) return parsed
     return null
@@ -56,12 +56,24 @@ export function loadSession() {
   }
 }
 
-export function saveSession(session) {
-  localStorage.setItem(SESSION_KEY, JSON.stringify(session))
+export function loadSession() {
+  return readSession(localStorage) ?? readSession(sessionStorage)
+}
+
+export function saveSession(session, remember) {
+  const raw = JSON.stringify(session)
+  if (remember) {
+    localStorage.setItem(SESSION_KEY, raw)
+    sessionStorage.removeItem(SESSION_KEY)
+    return
+  }
+  sessionStorage.setItem(SESSION_KEY, raw)
+  localStorage.removeItem(SESSION_KEY)
 }
 
 export function clearSession() {
   localStorage.removeItem(SESSION_KEY)
+  sessionStorage.removeItem(SESSION_KEY)
 }
 
 export function loadLessons() {

@@ -42,9 +42,9 @@ export default function App() {
     }
   }, [])
 
-  function login(next) {
+  function login(next, remember) {
     setSession(next)
-    saveSession(next)
+    saveSession(next, remember)
   }
 
   function logout() {

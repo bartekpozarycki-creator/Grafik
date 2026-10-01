@@ -96,6 +96,13 @@ export function saveLessons(lessons) {
   }
 }
 
+export const LESSONS_FROM_YEAR = new Date().getFullYear()
+export const LESSONS_FROM = `${LESSONS_FROM_YEAR}-10-01`
+
+export function lessonsFromLabel() {
+  return `1 października ${LESSONS_FROM_YEAR}`
+}
+
 export function dateKey(year, month, day) {
   return `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`
 }
@@ -103,6 +110,26 @@ export function dateKey(year, month, day) {
 export function todayKey() {
   const now = new Date()
   return dateKey(now.getFullYear(), now.getMonth(), now.getDate())
+}
+
+export function addDays(key, days) {
+  const [year, month, day] = String(key).split("-").map(Number)
+  const date = new Date(year, month - 1, day + days)
+  return dateKey(date.getFullYear(), date.getMonth(), date.getDate())
+}
+
+export function weeklyDates(start, until) {
+  const dates = []
+  let cursor = start
+  while (cursor <= until && dates.length < 40) {
+    dates.push(cursor)
+    cursor = addDays(cursor, 7)
+  }
+  return dates
+}
+
+export function monthKey(year, month) {
+  return `${year}-${String(month + 1).padStart(2, "0")}`
 }
 
 export function dateInMonth(key, year, month) {

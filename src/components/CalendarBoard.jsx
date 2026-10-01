@@ -12,6 +12,8 @@ import {
   formatMinutes,
   formatShort,
   labelOf,
+  LESSONS_FROM,
+  lessonsFromLabel,
   lessonsLabel,
   monthTitle,
   todayKey,
@@ -44,11 +46,37 @@ function Badge({ children, tone = "stone" }) {
     amber: "bg-amber-100 text-amber-950",
     sky: "bg-sky-100 text-sky-900",
     violet: "bg-violet-100 text-violet-900",
+    rose: "bg-rose-100 text-rose-900",
   }
   return (
     <span className={cx("inline-flex rounded-full px-2.5 py-1 text-xs font-medium", tones[tone])}>
       {children}
     </span>
+  )
+}
+
+function PaymentChecks({ lesson, onChange }) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <label className="flex items-center gap-2 text-xs font-medium text-stone-700">
+        <input
+          type="checkbox"
+          checked={lesson.studentPaid}
+          onChange={() => onChange({ studentPaid: !lesson.studentPaid })}
+          className="accent-teal-800"
+        />
+        Uczeń zapłacił
+      </label>
+      <label className="flex items-center gap-2 text-xs font-medium text-stone-700">
+        <input
+          type="checkbox"
+          checked={lesson.tutorPaid}
+          onChange={() => onChange({ tutorPaid: !lesson.tutorPaid })}
+          className="accent-teal-800"
+        />
+        Korepetytor opłacony
+      </label>
+    </div>
   )
 }
 
@@ -94,7 +122,10 @@ export default function CalendarBoard({
   month,
   onYearMonth,
   lessons,
+  freeHours = [],
   canEdit,
+  canMarkPayment = false,
+  onLessonPaid,
   onCreate,
   onUpdate,
   onDelete,
@@ -105,6 +136,7 @@ export default function CalendarBoard({
   const [editingId, setEditingId] = useState(null)
   const [confirmId, setConfirmId] = useState(null)
   const [saving, setSaving] = useState(false)
+  const [payError, setPayError] = useState("")
 
   const monthLessons = lessons
     .filter((lesson) => dateInMonth(lesson.date, year, month))
@@ -117,12 +149,33 @@ export default function CalendarBoard({
     else byDate.set(lesson.date, [lesson])
   }
 
+  const slotsByDate = new Map()
+  for (const slot of freeHours) {
+    if (slot.tutor !== person || !dateInMonth(slot.date, year, month)) continue
+    const bucket = slotsByDate.get(slot.date)
+    if (bucket) bucket.push(slot)
+    else slotsByDate.set(slot.date, [slot])
+  }
+  for (const bucket of slotsByDate.values()) {
+    bucket.sort((a, b) => a.startsAt.localeCompare(b.startsAt))
+  }
+
   const minutes = monthLessons.reduce((sum, lesson) => sum + Number(lesson.duration || 0), 0)
   const regular = monthLessons.filter((lesson) => lesson.kind === "zwykla").length
   const trial = monthLessons.filter((lesson) => lesson.kind === "probna").length
   const cells = buildMonthCells(year, month)
   const today = todayKey()
   const dayLessons = selected ? (byDate.get(selected) ?? []) : []
+  const daySlots = selected ? (slotsByDate.get(selected) ?? []) : []
+
+  async function markPaid(lesson, patch) {
+    setPayError("")
+    try {
+      await onLessonPaid(lesson.id, patch)
+    } catch (error) {
+      setPayError(error.message)
+    }
+  }
 
   function resetForm() {
     setForm(EMPTY_FORM)
@@ -199,6 +252,10 @@ export default function CalendarBoard({
     if (!discord) nextError.discord = "Podaj nazwę na Discordzie."
     setFormError(nextError)
     if (Object.keys(nextError).length || !selected) return
+    if (selected < LESSONS_FROM) {
+      setFormError({ form: `Odbyte lekcje wpisujemy od ${lessonsFromLabel()}.` })
+      return
+    }
 
     const payload = {
       date: selected,
@@ -230,6 +287,9 @@ export default function CalendarBoard({
 
   return (
     <div className="space-y-4">
+      <p className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+        W ten kalendarz wpisuj odbyte lekcje od {lessonsFromLabel()}.
+      </p>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Stat label="Czas" value={formatMinutes(minutes)} />
         <Stat label="Lekcje" value={monthLessons.length} />
@@ -308,6 +368,7 @@ export default function CalendarBoard({
             if (day == null) return <div key={`empty-${index}`} />
             const key = dateKey(year, month, day)
             const items = byDate.get(key) ?? []
+            const slots = slotsByDate.get(key) ?? []
             const isSelected = selected === key
             const isToday = key === today
             const weekend = index % 7 >= 5
@@ -316,7 +377,7 @@ export default function CalendarBoard({
                 key={key}
                 type="button"
                 aria-pressed={isSelected}
-                aria-label={`${day}, ${items.length} ${lessonsLabel(items.length)}`}
+                aria-label={`${day}, ${items.length} ${lessonsLabel(items.length)}, ${slots.length} wolnych`}
                 onClick={() => pickDay(key)}
                 className={cx(
                   "flex min-h-16 flex-col rounded-xl border p-1 text-left transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-800 sm:min-h-28 sm:rounded-2xl sm:p-2",
@@ -353,6 +414,17 @@ export default function CalendarBoard({
                   {items.length > 2 && (
                     <div className="px-1 text-[11px] font-medium text-stone-500">+{items.length - 2}</div>
                   )}
+                  {slots.slice(0, 2).map((slot) => (
+                    <div
+                      key={slot.id}
+                      className="truncate rounded-md bg-sky-100 px-1.5 py-0.5 text-[11px] font-medium text-sky-950"
+                    >
+                      {slot.startsAt}–{slot.endsAt}
+                    </div>
+                  ))}
+                  {slots.length > 2 && (
+                    <div className="px-1 text-[11px] font-medium text-sky-800">+{slots.length - 2} wolne</div>
+                  )}
                 </div>
                 <div className="mt-auto flex flex-wrap gap-1 pt-1 sm:hidden">
                   {items.length > 0 && items.length <= 4 ? (
@@ -368,6 +440,9 @@ export default function CalendarBoard({
                   ) : items.length > 4 ? (
                     <span className="text-[10px] font-semibold text-teal-800">{items.length}</span>
                   ) : null}
+                  {slots.length > 0 && (
+                    <span className="h-1.5 w-1.5 rounded-sm bg-sky-500" />
+                  )}
                 </div>
               </button>
             )
@@ -382,6 +457,10 @@ export default function CalendarBoard({
           <span className="inline-flex items-center gap-1.5">
             <span className="h-2 w-2 rounded-full bg-amber-500" />
             Próbna
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="h-2 w-2 rounded-sm bg-sky-500" />
+            Wolne
           </span>
         </div>
       </section>
@@ -399,8 +478,21 @@ export default function CalendarBoard({
           >
             <h3 className="text-lg font-semibold text-stone-900">{formatDay(selected)}</h3>
             {formError.form && <p className="mt-2 text-sm text-red-700">{formError.form}</p>}
+            {payError && <p className="mt-2 text-sm text-red-700">{payError}</p>}
             <div className={cx("mt-4 grid gap-6", canEdit && "lg:grid-cols-2")}>
               <div className="space-y-3">
+                {daySlots.length > 0 && (
+                  <div className="rounded-2xl border border-sky-200 bg-sky-50 px-3 py-3">
+                    <p className="text-sm font-semibold text-sky-950">Wolne godziny</p>
+                    <ul className="mt-2 space-y-1">
+                      {daySlots.map((slot) => (
+                        <li key={slot.id} className="text-sm text-sky-950">
+                          {slot.startsAt}–{slot.endsAt}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
                 {dayLessons.length === 0 && (
                   <p className="rounded-2xl border border-dashed border-stone-300 px-4 py-6 text-sm text-stone-500">
                     Brak lekcji w tym dniu.
@@ -470,13 +562,20 @@ export default function CalendarBoard({
                         <Badge tone={LEVEL_TONE[lesson.level] ?? "stone"}>
                           {labelOf(LEVELS, lesson.level)}
                         </Badge>
+                        {canMarkPayment && (
+                          <PaymentChecks lesson={lesson} onChange={(patch) => markPaid(lesson, patch)} />
+                        )}
                       </div>
                     </motion.article>
                   ))}
                 </AnimatePresence>
               </div>
 
-              {canEdit && (
+              {canEdit && selected < LESSONS_FROM ? (
+                <p className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-950">
+                  Odbyte lekcje wpisujemy od {lessonsFromLabel()}.
+                </p>
+              ) : canEdit ? (
                 <form onSubmit={submit} className="grid gap-4 sm:grid-cols-2">
                   <p className="text-sm font-semibold text-stone-800 sm:col-span-2">
                     {editingId ? "Edycja lekcji" : "Nowa lekcja"}
@@ -560,7 +659,7 @@ export default function CalendarBoard({
                     )}
                   </div>
                 </form>
-              )}
+              ) : null}
             </div>
           </motion.section>
         ) : (
@@ -578,6 +677,7 @@ export default function CalendarBoard({
 
       <section className="rounded-3xl border border-stone-200 bg-white p-4 shadow-sm sm:p-5">
         <h2 className="text-lg font-semibold text-stone-900">Ten miesiąc</h2>
+        {payError && !selected && <p className="mt-2 text-sm text-red-700">{payError}</p>}
         {monthLessons.length === 0 ? (
           <p className="mt-3 text-sm text-stone-500">W tym miesiącu nie ma jeszcze lekcji.</p>
         ) : (
@@ -609,6 +709,9 @@ export default function CalendarBoard({
                   <Badge tone={LEVEL_TONE[lesson.level] ?? "stone"}>
                     {labelOf(LEVELS, lesson.level)}
                   </Badge>
+                  {canMarkPayment && (
+                    <PaymentChecks lesson={lesson} onChange={(patch) => markPaid(lesson, patch)} />
+                  )}
                   {canEdit && (
                     <>
                       <button

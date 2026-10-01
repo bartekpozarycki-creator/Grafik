@@ -21,6 +21,8 @@ function fromRow(row) {
     duration: Number(row.duration),
     kind: row.kind,
     level: row.level,
+    studentPaid: Boolean(row.student_paid),
+    tutorPaid: Boolean(row.tutor_paid),
     createdAt: row.created_at ? Date.parse(row.created_at) : 0,
   }
 }
@@ -79,6 +81,19 @@ export async function updateLesson(id, tutor, lesson) {
     .select("*")
     .single()
   if (error) fail(error, "Nie udało się zapisać zmian.")
+  return fromRow(data)
+}
+
+export async function setLessonPaid(id, patch) {
+  if (!supabase) throw new Error("Brak konfiguracji Supabase.")
+  const row = {}
+  if ("studentPaid" in patch) row.student_paid = patch.studentPaid
+  if ("tutorPaid" in patch) row.tutor_paid = patch.tutorPaid
+  const { data, error } = await supabase.from("lessons").update(row).eq("id", id).select("*").single()
+  if (error?.code === "PGRST204" || error?.code === "42703") {
+    throw new Error("Brakuje statusu płatności w Supabase. Uruchom plik supabase/payments.sql.")
+  }
+  if (error) fail(error, "Nie udało się zapisać płatności.")
   return fromRow(data)
 }
 

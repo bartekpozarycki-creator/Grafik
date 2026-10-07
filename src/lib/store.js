@@ -1,8 +1,21 @@
 const LESSONS_KEY = "grafik.lessons.v1"
 const SESSION_KEY = "grafik.session.v1"
 
-export const TUTORS = ["Tomek", "Wojtek", "Szymon"]
+export const TUTORS = ["Tomek", "Wojtek", "Szymon", "Test"]
+export const TEST_TUTOR = "Test"
 export const ADMIN_LOGIN = "AdminLogin"
+
+export const LEVEL_PRICE = {
+  rozszerzenie: 100,
+  podstawa: 90,
+  podstawowka: 90,
+}
+
+export const TUTOR_PROFIT = {
+  Tomek: 30,
+  Wojtek: 20,
+  Szymon: 30,
+}
 
 export const DURATIONS = [45, 60, 90]
 
@@ -96,13 +109,6 @@ export function saveLessons(lessons) {
   }
 }
 
-export const LESSONS_FROM_YEAR = new Date().getFullYear()
-export const LESSONS_FROM = `${LESSONS_FROM_YEAR}-10-01`
-
-export function lessonsFromLabel() {
-  return `1 października ${LESSONS_FROM_YEAR}`
-}
-
 export function dateKey(year, month, day) {
   return `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`
 }
@@ -146,6 +152,20 @@ export function buildMonthCells(year, month) {
   for (let day = 1; day <= count; day += 1) cells.push(day)
   while (cells.length % 7 !== 0) cells.push(null)
   return cells
+}
+
+export function lessonRevenue(lesson) {
+  if (lesson.tutor === TEST_TUTOR || lesson.held !== true) return 0
+  return LEVEL_PRICE[lesson.level] ?? 0
+}
+
+export function lessonProfit(lesson) {
+  if (lesson.tutor === TEST_TUTOR || lesson.held !== true) return 0
+  return TUTOR_PROFIT[lesson.tutor] ?? 0
+}
+
+export function formatMoney(amount) {
+  return `${new Intl.NumberFormat("pl-PL").format(amount)} zł`
 }
 
 export function monthTitle(year, month) {

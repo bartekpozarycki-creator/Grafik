@@ -12,8 +12,6 @@ import {
   formatMinutes,
   formatShort,
   labelOf,
-  LESSONS_FROM,
-  lessonsFromLabel,
   lessonsLabel,
   monthTitle,
   todayKey,
@@ -22,6 +20,7 @@ import {
 const EMPTY_FORM = {
   studentName: "",
   discord: "",
+  startsAt: "16:00",
   duration: 60,
   kind: "zwykla",
   level: "podstawa",
@@ -49,9 +48,51 @@ function Badge({ children, tone = "stone" }) {
     rose: "bg-rose-100 text-rose-900",
   }
   return (
-    <span className={cx("inline-flex rounded-full px-2.5 py-1 text-xs font-medium", tones[tone])}>
+    <span
+      className={cx(
+        "inline-flex h-7 items-center justify-center rounded-full px-2.5 text-xs font-medium leading-none",
+        tones[tone],
+      )}
+    >
       {children}
     </span>
+  )
+}
+
+function heldBadge(lesson) {
+  if (lesson.held === true) return { text: "Odbyły się", tone: "teal" }
+  if (lesson.held === false) return { text: "Nie odbyły się", tone: "rose" }
+  return { text: "Nieoznaczone", tone: "stone" }
+}
+
+function HeldMark({ held, onChange }) {
+  const options = [
+    { value: true, label: "Odbyły się", active: "border-teal-800 bg-teal-800 text-white" },
+    { value: false, label: "Nie odbyły się", active: "border-rose-800 bg-rose-800 text-white" },
+  ]
+  return (
+    <div className="mt-3">
+      {held == null && <p className="mb-2 text-xs font-medium text-stone-500">Zaznacz, czy zajęcia się odbyły.</p>}
+      <div className="grid grid-cols-2 gap-2">
+        {options.map((option) => {
+          const selected = held === option.value
+          return (
+            <button
+              key={option.label}
+              type="button"
+              onClick={() => {
+                if (!selected) onChange(option.value)
+              }}
+              className={`flex h-10 items-center justify-center rounded-xl border px-3 text-sm font-semibold leading-none transition ${
+                selected ? option.active : "border-stone-200 bg-white text-stone-700 hover:border-stone-300"
+              }`}
+            >
+              {option.label}
+            </button>
+          )
+        })}
+      </div>
+    </div>
   )
 }
 
@@ -126,6 +167,7 @@ export default function CalendarBoard({
   canEdit,
   canMarkPayment = false,
   onLessonPaid,
+  onLessonHeld,
   onCreate,
   onUpdate,
   onDelete,
@@ -140,7 +182,12 @@ export default function CalendarBoard({
 
   const monthLessons = lessons
     .filter((lesson) => dateInMonth(lesson.date, year, month))
-    .sort((a, b) => a.date.localeCompare(b.date) || (a.createdAt ?? 0) - (b.createdAt ?? 0))
+    .sort(
+      (a, b) =>
+        a.date.localeCompare(b.date) ||
+        (a.startsAt || "99:99").localeCompare(b.startsAt || "99:99") ||
+        (a.createdAt ?? 0) - (b.createdAt ?? 0),
+    )
 
   const byDate = new Map()
   for (const lesson of monthLessons) {
@@ -167,6 +214,24 @@ export default function CalendarBoard({
   const today = todayKey()
   const dayLessons = selected ? (byDate.get(selected) ?? []) : []
   const daySlots = selected ? (slotsByDate.get(selected) ?? []) : []
+  const dayEntries = [
+    ...daySlots.map((slot) => ({ kind: "slot", id: slot.id, start: slot.startsAt, slot })),
+    ...dayLessons.map((lesson) => ({
+      kind: "lesson",
+      id: lesson.id,
+      start: lesson.startsAt || "99:99",
+      lesson,
+    })),
+  ].sort((a, b) => a.start.localeCompare(b.start))
+
+  async function markHeld(lesson, held) {
+    setPayError("")
+    try {
+      await onLessonHeld(lesson.id, held)
+    } catch (error) {
+      setPayError(error.message)
+    }
+  }
 
   async function markPaid(lesson, patch) {
     setPayError("")
@@ -181,6 +246,7 @@ export default function CalendarBoard({
     setForm(EMPTY_FORM)
     setEditingId(null)
     setFormError({})
+    setPayError("")
     setConfirmId(null)
   }
 
@@ -217,6 +283,7 @@ export default function CalendarBoard({
     setForm({
       studentName: lesson.studentName,
       discord: lesson.discord,
+      startsAt: lesson.startsAt || "16:00",
       duration: lesson.duration,
       kind: lesson.kind,
       level: lesson.level,
@@ -250,17 +317,15 @@ export default function CalendarBoard({
     const nextError = {}
     if (!studentName) nextError.studentName = "Podaj imię."
     if (!discord) nextError.discord = "Podaj nazwę na Discordzie."
+    if (!form.startsAt) nextError.startsAt = "Podaj godzinę rozpoczęcia."
     setFormError(nextError)
     if (Object.keys(nextError).length || !selected) return
-    if (selected < LESSONS_FROM) {
-      setFormError({ form: `Odbyte lekcje wpisujemy od ${lessonsFromLabel()}.` })
-      return
-    }
 
     const payload = {
       date: selected,
       studentName,
       discord,
+      startsAt: form.startsAt,
       duration: Number(form.duration),
       kind: form.kind,
       level: form.level,
@@ -287,9 +352,6 @@ export default function CalendarBoard({
 
   return (
     <div className="space-y-4">
-      <p className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
-        W ten kalendarz wpisuj odbyte lekcje od {lessonsFromLabel()}.
-      </p>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Stat label="Czas" value={formatMinutes(minutes)} />
         <Stat label="Lekcje" value={monthLessons.length} />
@@ -397,34 +459,54 @@ export default function CalendarBoard({
                   {day}
                 </span>
                 <div className="mt-1 hidden space-y-1 sm:block">
-                  {items.slice(0, 2).map((lesson) => (
-                    <div
-                      key={lesson.id}
-                      title={`${lesson.studentName} · ${lesson.duration} min`}
-                      className={cx(
-                        "truncate rounded-md px-1.5 py-0.5 text-[11px] font-medium",
-                        lesson.kind === "probna"
-                          ? "bg-amber-100 text-amber-950"
-                          : "bg-teal-100 text-teal-950",
-                      )}
-                    >
-                      {lesson.studentName}
-                    </div>
-                  ))}
-                  {items.length > 2 && (
-                    <div className="px-1 text-[11px] font-medium text-stone-500">+{items.length - 2}</div>
-                  )}
-                  {slots.slice(0, 2).map((slot) => (
-                    <div
-                      key={slot.id}
-                      className="truncate rounded-md bg-sky-100 px-1.5 py-0.5 text-[11px] font-medium text-sky-950"
-                    >
-                      {slot.startsAt}–{slot.endsAt}
-                    </div>
-                  ))}
-                  {slots.length > 2 && (
-                    <div className="px-1 text-[11px] font-medium text-sky-800">+{slots.length - 2} wolne</div>
-                  )}
+                  {(() => {
+                    const chips = [
+                      ...items.map((lesson) => ({
+                        id: lesson.id,
+                        start: lesson.startsAt || "99:99",
+                        lesson,
+                      })),
+                      ...slots.map((slot) => ({
+                        id: slot.id,
+                        start: slot.startsAt,
+                        slot,
+                      })),
+                    ].sort((a, b) => a.start.localeCompare(b.start))
+                    const visible = chips.slice(0, 3)
+                    return (
+                      <>
+                        {visible.map((chip) =>
+                          chip.lesson ? (
+                            <div
+                              key={chip.id}
+                              title={`${chip.lesson.startsAt ? `${chip.lesson.startsAt} · ` : ""}${chip.lesson.studentName} · ${chip.lesson.duration} min`}
+                              className={cx(
+                                "flex h-5 items-center overflow-hidden rounded-md px-1.5 text-[11px] font-medium leading-none text-ellipsis whitespace-nowrap",
+                                chip.lesson.kind === "probna"
+                                  ? "bg-amber-100 text-amber-950"
+                                  : "bg-teal-100 text-teal-950",
+                              )}
+                            >
+                              {chip.lesson.startsAt ? `${chip.lesson.startsAt} ` : ""}
+                              {chip.lesson.studentName}
+                            </div>
+                          ) : (
+                            <div
+                              key={chip.id}
+                              className="flex h-5 items-center overflow-hidden rounded-md bg-sky-100 px-1.5 text-[11px] font-medium leading-none text-ellipsis whitespace-nowrap text-sky-950"
+                            >
+                              {chip.slot.startsAt}–{chip.slot.endsAt}
+                            </div>
+                          ),
+                        )}
+                        {chips.length > visible.length && (
+                          <div className="flex h-5 items-center px-1 text-[11px] font-medium leading-none text-stone-500">
+                            +{chips.length - visible.length}
+                          </div>
+                        )}
+                      </>
+                    )
+                  })()}
                 </div>
                 <div className="mt-auto flex flex-wrap gap-1 pt-1 sm:hidden">
                   {items.length > 0 && items.length <= 4 ? (
@@ -481,25 +563,24 @@ export default function CalendarBoard({
             {payError && <p className="mt-2 text-sm text-red-700">{payError}</p>}
             <div className={cx("mt-4 grid gap-6", canEdit && "lg:grid-cols-2")}>
               <div className="space-y-3">
-                {daySlots.length > 0 && (
-                  <div className="rounded-2xl border border-sky-200 bg-sky-50 px-3 py-3">
-                    <p className="text-sm font-semibold text-sky-950">Wolne godziny</p>
-                    <ul className="mt-2 space-y-1">
-                      {daySlots.map((slot) => (
-                        <li key={slot.id} className="text-sm text-sky-950">
-                          {slot.startsAt}–{slot.endsAt}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                {dayLessons.length === 0 && (
+                {dayEntries.length === 0 && (
                   <p className="rounded-2xl border border-dashed border-stone-300 px-4 py-6 text-sm text-stone-500">
                     Brak lekcji w tym dniu.
                   </p>
                 )}
                 <AnimatePresence initial={false}>
-                  {dayLessons.map((lesson) => (
+                  {dayEntries.map((entry) =>
+                    entry.kind === "slot" ? (
+                      <div
+                        key={entry.id}
+                        className="flex h-11 items-center rounded-2xl border border-sky-200 bg-sky-50 px-3 text-sm font-medium leading-none text-sky-950"
+                      >
+                        {entry.slot.startsAt}–{entry.slot.endsAt}
+                      </div>
+                    ) : (
+                      (() => {
+                        const lesson = entry.lesson
+                        return (
                     <motion.article
                       key={lesson.id}
                       layout
@@ -554,28 +635,29 @@ export default function CalendarBoard({
                           </div>
                         )}
                       </div>
-                      <div className="mt-3 flex flex-wrap gap-2">
+                      <div className="mt-3 flex flex-wrap items-center gap-2">
                         <Badge tone={lesson.kind === "probna" ? "amber" : "teal"}>
                           {labelOf(KINDS, lesson.kind)}
                         </Badge>
-                        <Badge>{lesson.duration} min</Badge>
+                        <Badge>{lesson.startsAt ? `${lesson.startsAt} · ` : ""}{lesson.duration} min</Badge>
                         <Badge tone={LEVEL_TONE[lesson.level] ?? "stone"}>
                           {labelOf(LEVELS, lesson.level)}
                         </Badge>
+                        {!canEdit && <Badge tone={heldBadge(lesson).tone}>{heldBadge(lesson).text}</Badge>}
                         {canMarkPayment && (
                           <PaymentChecks lesson={lesson} onChange={(patch) => markPaid(lesson, patch)} />
                         )}
                       </div>
+                      {canEdit && <HeldMark held={lesson.held} onChange={(held) => markHeld(lesson, held)} />}
                     </motion.article>
-                  ))}
+                        )
+                      })()
+                    ),
+                  )}
                 </AnimatePresence>
               </div>
 
-              {canEdit && selected < LESSONS_FROM ? (
-                <p className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-950">
-                  Odbyte lekcje wpisujemy od {lessonsFromLabel()}.
-                </p>
-              ) : canEdit ? (
+              {canEdit ? (
                 <form onSubmit={submit} className="grid gap-4 sm:grid-cols-2">
                   <p className="text-sm font-semibold text-stone-800 sm:col-span-2">
                     {editingId ? "Edycja lekcji" : "Nowa lekcja"}
@@ -614,6 +696,22 @@ export default function CalendarBoard({
                     />
                     {formError.discord && (
                       <span className="mt-1 block text-xs text-red-700">{formError.discord}</span>
+                    )}
+                  </label>
+                  <label className="block sm:col-span-2">
+                    <span className="mb-1.5 block text-sm font-medium text-stone-700">Od</span>
+                    <input
+                      type="time"
+                      value={form.startsAt}
+                      onChange={(event) => setField("startsAt", event.target.value)}
+                      aria-invalid={Boolean(formError.startsAt)}
+                      className={cx(
+                        "w-full rounded-xl border bg-white px-3 py-2.5 text-sm outline-none ring-teal-800 focus:ring-2 sm:max-w-40",
+                        formError.startsAt ? "border-red-400" : "border-stone-300",
+                      )}
+                    />
+                    {formError.startsAt && (
+                      <span className="mt-1 block text-xs text-red-700">{formError.startsAt}</span>
                     )}
                   </label>
                   <div className="sm:col-span-2">
@@ -702,13 +800,14 @@ export default function CalendarBoard({
                   >
                     {formatShort(lesson.date)}
                   </button>
-                  <Badge>{lesson.duration} min</Badge>
+                  <Badge>{lesson.startsAt ? `${lesson.startsAt} · ` : ""}{lesson.duration} min</Badge>
                   <Badge tone={lesson.kind === "probna" ? "amber" : "teal"}>
                     {labelOf(KINDS, lesson.kind)}
                   </Badge>
                   <Badge tone={LEVEL_TONE[lesson.level] ?? "stone"}>
                     {labelOf(LEVELS, lesson.level)}
                   </Badge>
+                  <Badge tone={heldBadge(lesson).tone}>{heldBadge(lesson).text}</Badge>
                   {canMarkPayment && (
                     <PaymentChecks lesson={lesson} onChange={(patch) => markPaid(lesson, patch)} />
                   )}

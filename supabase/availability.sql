@@ -1,12 +1,12 @@
 create table if not exists public.tutor_status (
-  tutor text primary key check (tutor in ('Tomek', 'Wojtek', 'Szymon')),
+  tutor text primary key check (tutor in ('Tomek', 'Wojtek', 'Szymon', 'Test')),
   taking boolean not null default true,
   updated_at timestamptz not null default now()
 );
 
 create table if not exists public.free_hours (
   id uuid primary key default gen_random_uuid(),
-  tutor text not null check (tutor in ('Tomek', 'Wojtek', 'Szymon')),
+  tutor text not null check (tutor in ('Tomek', 'Wojtek', 'Szymon', 'Test')),
   date date not null,
   starts_at time not null,
   ends_at time not null,

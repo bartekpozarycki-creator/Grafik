@@ -63,9 +63,12 @@ export function FreeHours({ tutor, hours, canEdit, onCreate, onUpdate, onDelete 
   const [error, setError] = useState("")
   const [saving, setSaving] = useState(false)
   const [confirmId, setConfirmId] = useState(null)
+  const [expanded, setExpanded] = useState(false)
   const mine = hours
     .filter((slot) => slot.tutor === tutor)
     .sort((a, b) => a.date.localeCompare(b.date) || a.startsAt.localeCompare(b.startsAt))
+  const hidden = mine.length > 5
+  const visible = hidden && !expanded ? mine.slice(0, 5) : mine
 
   function beginEdit(slot) {
     setEditingId(slot.id)
@@ -219,7 +222,7 @@ export function FreeHours({ tutor, hours, canEdit, onCreate, onUpdate, onDelete 
         <p className="mt-4 text-sm text-stone-500">Nie ma jeszcze wolnych godzin.</p>
       ) : (
         <div className="mt-4 space-y-2">
-          {mine.map((slot) => (
+          {visible.map((slot) => (
             <div
               key={slot.id}
               className={`flex items-center justify-between gap-3 rounded-2xl border px-3 py-3 ${
@@ -260,6 +263,15 @@ export function FreeHours({ tutor, hours, canEdit, onCreate, onUpdate, onDelete 
               )}
             </div>
           ))}
+          {hidden && (
+            <button
+              type="button"
+              onClick={() => setExpanded((current) => !current)}
+              className="text-sm font-medium text-teal-800"
+            >
+              {expanded ? "Zwiń" : `Pokaż wszystkie (${mine.length})`}
+            </button>
+          )}
         </div>
       )}
     </section>

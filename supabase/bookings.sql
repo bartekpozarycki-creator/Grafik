@@ -4,7 +4,7 @@ create table if not exists public.bookings (
   discord text not null,
   email text not null,
   phone text not null,
-  tutor text not null check (tutor in ('Tomek', 'Wojtek', 'Szymon')),
+  tutor text not null check (tutor in ('Tomek', 'Wojtek', 'Szymon', 'Test')),
   date date not null,
   starts_at time not null,
   duration integer not null default 60 check (duration = 60),

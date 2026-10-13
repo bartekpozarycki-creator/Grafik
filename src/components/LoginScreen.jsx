@@ -1,31 +1,69 @@
 import { useEffect, useState } from "react"
 import { AnimatePresence, motion } from "framer-motion"
-import { matchLogin } from "../lib/store"
+import { lookupLogin, reserveAllowed } from "../lib/auth"
 
-const RESERVE_LOGIN = "testrezerwacja"
-
-export default function LoginScreen({ onLogin }) {
+export default function LoginScreen({ onLogin, onReserve }) {
   const [login, setLogin] = useState("")
   const [code, setCode] = useState("")
   const [remember, setRemember] = useState(false)
   const [error, setError] = useState("")
   const [codeClip, setCodeClip] = useState(true)
-  const gate = login.trim().toLowerCase() === RESERVE_LOGIN
+  const [gate, setGate] = useState(false)
+  const [checking, setChecking] = useState(false)
 
   useEffect(() => {
     if (!gate) setCodeClip(true)
   }, [gate])
 
-  function submit(event) {
-    event.preventDefault()
-    if (gate) return
-    const next = matchLogin(login)
-    if (!next) {
-      setError("Nie ma takiego loginu.")
-      return
+  useEffect(() => {
+    const value = login.trim()
+    if (!value) return undefined
+    let cancel = false
+    const timer = setTimeout(async () => {
+      try {
+        const found = await lookupLogin(value)
+        if (!cancel) setGate(found?.role === "reserve")
+      } catch (reason) {
+        if (!cancel) setError(reason.message)
+      }
+    }, 250)
+    return () => {
+      cancel = true
+      clearTimeout(timer)
     }
-    setError("")
-    onLogin(next, remember)
+  }, [login])
+
+  async function submit(event) {
+    event.preventDefault()
+    setChecking(true)
+    try {
+      const found = await lookupLogin(login)
+      if (found?.role === "reserve") {
+        setGate(true)
+        if (!code.trim()) {
+          setError("Podaj kod.")
+          return
+        }
+        const allowed = await reserveAllowed(login, code)
+        if (!allowed) {
+          setError("Zły kod.")
+          return
+        }
+        setError("")
+        onReserve()
+        return
+      }
+      if (!found) {
+        setError("Nie ma takiego loginu.")
+        return
+      }
+      setError("")
+      onLogin(found, remember)
+    } catch (reason) {
+      setError(reason.message)
+    } finally {
+      setChecking(false)
+    }
   }
 
   return (
@@ -54,12 +92,10 @@ export default function LoginScreen({ onLogin }) {
                 autoComplete="off"
                 value={login}
                 onChange={(event) => {
-                  const next = event.target.value
-                  setLogin(next)
-                  if (next.trim().toLowerCase() !== RESERVE_LOGIN) {
-                    setCodeClip(true)
-                    setCode("")
-                  }
+                  setLogin(event.target.value)
+                  setGate(false)
+                  setCodeClip(true)
+                  setCode("")
                   if (error) setError("")
                 }}
                 className={`w-full rounded-2xl border bg-white px-4 py-3 text-base outline-none ring-teal-800 transition focus:ring-2 ${
@@ -84,9 +120,8 @@ export default function LoginScreen({ onLogin }) {
                   className={codeClip ? "overflow-hidden" : undefined}
                 >
                   <label className="mt-4 block">
-                    <span className="mb-1.5 block text-sm font-medium text-stone-400">Podaj kod</span>
+                    <span className="mb-1.5 block text-sm font-medium text-stone-700">Podaj kod</span>
                     <input
-                      disabled
                       autoComplete="off"
                       inputMode="numeric"
                       value={code}
@@ -94,9 +129,10 @@ export default function LoginScreen({ onLogin }) {
                         setCode(event.target.value)
                         if (error) setError("")
                       }}
-                      className="w-full cursor-not-allowed rounded-2xl border border-stone-200 bg-stone-100 px-4 py-3 text-base text-stone-400 outline-none"
+                      className={`w-full rounded-2xl border bg-white px-4 py-3 text-base outline-none ring-teal-800 transition focus:ring-2 ${
+                        error ? "border-red-400" : "border-stone-300"
+                      }`}
                     />
-                    <span className="mt-2 block text-sm text-stone-400">Na razie niedostępne.</span>
                   </label>
                 </motion.div>
               )}
@@ -117,14 +153,14 @@ export default function LoginScreen({ onLogin }) {
             </label>
             <button
               type="submit"
-              disabled={gate}
+              disabled={checking}
               className={`mt-4 w-full rounded-2xl px-4 py-3 text-sm font-semibold transition ${
-                gate
+                checking
                   ? "cursor-not-allowed bg-stone-200 text-stone-400"
                   : "bg-teal-800 text-white hover:bg-teal-900"
               }`}
             >
-              Wejdź
+              {checking ? "Sprawdzanie…" : "Wejdź"}
             </button>
           </motion.form>
         </motion.div>

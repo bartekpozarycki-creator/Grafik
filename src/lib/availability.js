@@ -1,4 +1,3 @@
-import { TUTORS } from "./store"
 import { supabase } from "./supabase"
 
 function fail(error, fallback) {
@@ -24,17 +23,21 @@ function fromHour(row) {
   }
 }
 
-export function emptyStatuses() {
-  return Object.fromEntries(TUTORS.map((name) => [name, true]))
+export function emptyStatuses(names = []) {
+  return Object.fromEntries(names.map((name) => [name, true]))
 }
 
-export async function fetchStatuses() {
+export async function fetchStatuses(names = []) {
   if (!supabase) throw new Error("Brak konfiguracji Supabase.")
-  const { data, error } = await supabase.from("tutor_status").select("tutor, taking")
+  const { data, error } = await supabase.from("tutor_status").select("tutor, taking, bookable")
   if (error) fail(error, "Nie udało się wczytać statusu korepetytorów.")
-  const statuses = emptyStatuses()
-  for (const row of data ?? []) statuses[row.tutor] = Boolean(row.taking)
-  return statuses
+  const statuses = emptyStatuses(names)
+  const closed = []
+  for (const row of data ?? []) {
+    statuses[row.tutor] = Boolean(row.taking)
+    if (row.bookable === false) closed.push(row.tutor)
+  }
+  return { statuses, closed }
 }
 
 export async function saveTutorStatus(tutor, taking) {
@@ -54,38 +57,37 @@ async function selectFreeHours(filter) {
   return (data ?? []).map(fromHour)
 }
 
-async function persistFreeHourMerge(slots) {
-  const plan = planFreeHourMerge(slots)
-  if (plan.updates.length === 0 && plan.removeIds.length === 0 && plan.inserts.length === 0) return false
-  for (const slot of plan.updates) await updateFreeHour(slot.id, slot.tutor, slot)
-  if (plan.inserts.length) await createFreeHours(plan.inserts)
-  for (const slot of plan.removeIds) await deleteFreeHour(slot.id, slot.tutor)
-  return true
-}
-
 export async function fetchFreeHours() {
   if (!supabase) throw new Error("Brak konfiguracji Supabase.")
   const slots = await selectFreeHours((query) => query)
-  const changed = await persistFreeHourMerge(slots)
+  const { data, error } = await supabase.from("lessons").select("tutor,date,starts_at,duration")
+  if (error) fail(error, "Nie udało się wczytać lekcji.")
+  const lessons = (data ?? []).map((row) => ({
+    tutor: row.tutor,
+    date: String(row.date).slice(0, 10),
+    startsAt: row.starts_at ? String(row.starts_at).slice(0, 5) : "",
+    duration: Number(row.duration),
+  }))
+  const changed = await commitFit(slots, fitFreeHours(slots, lessons))
   if (!changed) return slots
   return selectFreeHours((query) => query)
 }
 
-export async function addFreeHours(entries) {
+export async function addFreeHours(entries, lessons = []) {
   if (!supabase) throw new Error("Brak konfiguracji Supabase.")
   if (entries.length === 0) return []
   const tutors = [...new Set(entries.map((entry) => entry.tutor))]
   const dates = [...new Set(entries.map((entry) => entry.date))]
   const existing = await selectFreeHours((query) => query.in("tutor", tutors).in("date", dates))
-  await persistFreeHourMerge([...existing, ...entries])
+  await commitFit(existing, fitFreeHours([...existing, ...entries], lessons))
   return selectFreeHours((query) => query.in("tutor", tutors).in("date", dates))
 }
 
-export async function changeFreeHour(id, tutor, slot) {
+export async function changeFreeHour(id, tutor, slot, lessons = []) {
   if (!supabase) throw new Error("Brak konfiguracji Supabase.")
   await updateFreeHour(id, tutor, slot)
   const day = await selectFreeHours((query) => query.eq("tutor", tutor).eq("date", slot.date))
-  await persistFreeHourMerge(day)
+  await commitFit(day, fitFreeHours(day, lessons))
   return selectFreeHours((query) => query.eq("tutor", tutor).eq("date", slot.date))
 }
 
@@ -142,7 +144,44 @@ function openRange(start, end) {
   return { startsAt: fromMinutes(start), endsAt: fromMinutes(end) }
 }
 
-function planFreeHourMerge(slots) {
+const FREE_GAP_MINUTES = 5
+
+function lessonBlock(lesson) {
+  if (!lesson.startsAt) return null
+  const start = toMinutes(lesson.startsAt)
+  return {
+    tutor: lesson.tutor,
+    date: lesson.date,
+    start: start - FREE_GAP_MINUTES,
+    end: start + Number(lesson.duration) + FREE_GAP_MINUTES,
+  }
+}
+
+function mergePieces(pieces) {
+  const sorted = [...pieces].sort((left, right) => left.start - right.start || left.end - right.end)
+  const merged = []
+  for (const piece of sorted) {
+    const last = merged.at(-1)
+    if (last && piece.start <= last.end) last.end = Math.max(last.end, piece.end)
+    else merged.push({ start: piece.start, end: piece.end })
+  }
+  return merged
+}
+
+function subtractPiece(pieces, blockStart, blockEnd) {
+  const next = []
+  for (const piece of pieces) {
+    if (blockEnd <= piece.start || blockStart >= piece.end) {
+      next.push(piece)
+      continue
+    }
+    if (piece.start < blockStart) next.push({ start: piece.start, end: blockStart })
+    if (piece.end > blockEnd) next.push({ start: blockEnd, end: piece.end })
+  }
+  return next
+}
+
+export function fitFreeHours(slots, lessons) {
   const groups = new Map()
   for (const slot of slots) {
     const key = `${slot.tutor}|${slot.date}`
@@ -151,51 +190,72 @@ function planFreeHourMerge(slots) {
     else groups.set(key, [slot])
   }
 
+  const desired = []
+  for (const [key, list] of groups) {
+    const splitAt = key.indexOf("|")
+    const tutor = key.slice(0, splitAt)
+    const date = key.slice(splitAt + 1)
+    let pieces = mergePieces(
+      list
+        .map((slot) => ({ start: toMinutes(slot.startsAt), end: toMinutes(slot.endsAt) }))
+        .filter((piece) => piece.end > piece.start),
+    )
+    for (const lesson of lessons) {
+      if (lesson.tutor !== tutor || lesson.date !== date) continue
+      const block = lessonBlock(lesson)
+      if (!block) continue
+      pieces = subtractPiece(pieces, block.start, block.end)
+    }
+    for (const piece of pieces) {
+      const range = openRange(piece.start, piece.end)
+      if (range) desired.push({ tutor, date, ...range })
+    }
+  }
+  return desired
+}
+
+async function commitFit(existing, desired) {
+  const keys = new Set([...existing, ...desired].map((slot) => `${slot.tutor}|${slot.date}`))
   const updates = []
   const removeIds = []
   const inserts = []
-
-  for (const list of groups.values()) {
-    const sorted = [...list].sort(
-      (a, b) => toMinutes(a.startsAt) - toMinutes(b.startsAt) || toMinutes(a.endsAt) - toMinutes(b.endsAt),
-    )
-    const blocks = []
-    for (const slot of sorted) {
-      const start = toMinutes(slot.startsAt)
-      const end = toMinutes(slot.endsAt)
-      if (!(end > start)) continue
-      const last = blocks.at(-1)
-      if (last && start <= last.end) {
-        last.end = Math.max(last.end, end)
-        last.sources.push(slot)
-      } else {
-        blocks.push({ start, end, tutor: slot.tutor, date: slot.date, sources: [slot] })
+  for (const key of keys) {
+    const splitAt = key.indexOf("|")
+    const tutor = key.slice(0, splitAt)
+    const date = key.slice(splitAt + 1)
+    const have = existing
+      .filter((slot) => slot.tutor === tutor && slot.date === date)
+      .sort((left, right) => left.startsAt.localeCompare(right.startsAt) || left.endsAt.localeCompare(right.endsAt))
+    const want = desired
+      .filter((slot) => slot.tutor === tutor && slot.date === date)
+      .sort((left, right) => left.startsAt.localeCompare(right.startsAt) || left.endsAt.localeCompare(right.endsAt))
+    const count = Math.min(have.length, want.length)
+    for (let index = 0; index < count; index += 1) {
+      if (have[index].startsAt !== want[index].startsAt || have[index].endsAt !== want[index].endsAt) {
+        updates.push({
+          id: have[index].id,
+          tutor,
+          date,
+          startsAt: want[index].startsAt,
+          endsAt: want[index].endsAt,
+        })
       }
     }
-
-    for (const block of blocks) {
-      const range = openRange(block.start, block.end)
-      if (!range) continue
-      const keeper = block.sources.find((slot) => slot.id)
-      if (keeper) {
-        if (keeper.startsAt !== range.startsAt || keeper.endsAt !== range.endsAt) {
-          updates.push({ id: keeper.id, tutor: block.tutor, date: block.date, ...range })
-        }
-        for (const slot of block.sources) {
-          if (slot.id && slot.id !== keeper.id) removeIds.push({ id: slot.id, tutor: slot.tutor })
-        }
-      } else {
-        inserts.push({ tutor: block.tutor, date: block.date, ...range })
-      }
-    }
+    for (let index = count; index < have.length; index += 1) removeIds.push(have[index])
+    for (let index = count; index < want.length; index += 1) inserts.push(want[index])
   }
-
-  return { updates, removeIds, inserts }
+  if (updates.length === 0 && removeIds.length === 0 && inserts.length === 0) return false
+  for (const slot of updates) await updateFreeHour(slot.id, slot.tutor, slot)
+  if (inserts.length) await createFreeHours(inserts)
+  for (const slot of removeIds) await deleteFreeHour(slot.id, slot.tutor)
+  return true
 }
 
 export function carveFreeHours(slots, lesson) {
-  const blockStart = toMinutes(lesson.startsAt) - 15
-  const blockEnd = toMinutes(lesson.startsAt) + Number(lesson.duration) + 15
+  const block = lessonBlock(lesson)
+  if (!block) return { removeIds: [], updates: [], inserts: [] }
+  const blockStart = block.start
+  const blockEnd = block.end
   const removeIds = []
   const updates = []
   const inserts = []

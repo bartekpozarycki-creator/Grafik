@@ -18,24 +18,34 @@ import {
   saveTutorStatus,
 } from "./lib/availability"
 import { createLesson, deleteLesson, fetchLessons, setLessonHeld, setLessonPaid, updateLesson } from "./lib/lessons"
-import { clearSession, loadSession, saveSession } from "./lib/store"
+import { forgetThisDevice } from "./lib/push"
+import { clearSession, loadSession, rememberTutors, saveSession } from "./lib/store"
 
 export default function App() {
-  const [session, setSession] = useState(loadSession)
+  const [session, setSession] = useState(() => {
+    const saved = loadSession()
+    if (saved?.role === "admin") rememberTutors(saved.tutors)
+    else if (saved?.role === "tutor") rememberTutors([saved])
+    return saved
+  })
   const [lessons, setLessons] = useState([])
   const [freeHours, setFreeHours] = useState([])
   const [statuses, setStatuses] = useState(emptyStatuses)
+  const [closed, setClosed] = useState([])
   const [bookings, setBookings] = useState([])
   const [bookingError, setBookingError] = useState("")
   const [reserving, setReserving] = useState(false)
-  const [ready, setReady] = useState(false)
+  const [ready, setReady] = useState(!session)
   const [loadError, setLoadError] = useState("")
   const revision = useRef(0)
   const screen = reserving ? "rezerwacja" : !session ? "guest" : !ready ? "loading" : session.name
 
   useEffect(() => {
+    if (!session && !reserving) return undefined
+
     let cancelled = false
     let requestId = 0
+    const names = !session ? [] : session.role === "admin" ? session.tutors.map((item) => item.name) : [session.name]
 
     function isCurrent(id, seen) {
       return !cancelled && id === requestId && seen === revision.current
@@ -61,10 +71,11 @@ export default function App() {
         if (isCurrent(id, seen)) setBookingError(error.message)
       }
       try {
-        const [hours, nextStatuses] = await Promise.all([fetchFreeHours(), fetchStatuses()])
+        const [hours, nextStatuses] = await Promise.all([fetchFreeHours(), fetchStatuses(names)])
         if (isCurrent(id, seen)) {
           setFreeHours(hours)
-          setStatuses(nextStatuses)
+          setStatuses(nextStatuses.statuses)
+          setClosed(nextStatuses.closed)
         }
       } catch (error) {
         message = message ? `${message} ${error.message}` : error.message
@@ -81,16 +92,27 @@ export default function App() {
       cancelled = true
       window.removeEventListener("focus", load)
     }
-  }, [])
+  }, [session, reserving])
 
   function login(next, remember) {
+    if (next.role === "admin") rememberTutors(next.tutors)
+    else rememberTutors([next])
+    setReady(false)
     setSession(next)
     saveSession(next, remember)
   }
 
   function logout() {
+    forgetThisDevice().catch(() => {})
+    rememberTutors([])
+    setReady(true)
     setSession(null)
     clearSession()
+    setLessons([])
+    setFreeHours([])
+    setBookings([])
+    setStatuses(emptyStatuses())
+    setClosed([])
   }
 
   async function punchFreeTime(tutor, lesson) {
@@ -160,7 +182,10 @@ export default function App() {
   }
 
   async function onCreateFree(tutor, entries) {
-    const slots = await addFreeHours(entries.map((entry) => ({ ...entry, tutor })))
+    const slots = await addFreeHours(
+      entries.map((entry) => ({ ...entry, tutor })),
+      lessons.filter((lesson) => lesson.tutor === tutor),
+    )
     const dates = new Set(entries.map((entry) => entry.date))
     revision.current += 1
     setFreeHours((current) => [
@@ -170,7 +195,12 @@ export default function App() {
   }
 
   async function onUpdateFree(tutor, id, data) {
-    const slots = await changeFreeHour(id, tutor, data)
+    const slots = await changeFreeHour(
+      id,
+      tutor,
+      data,
+      lessons.filter((lesson) => lesson.tutor === tutor),
+    )
     revision.current += 1
     setFreeHours((current) => [
       ...current.filter((slot) => slot.tutor !== tutor || (slot.date !== data.date && slot.id !== id)),
@@ -195,24 +225,33 @@ export default function App() {
     }
   }
 
-  let view = <LoginScreen onLogin={login} onReserve={() => setReserving(true)} />
-  if (reserving) {
+  let view = (
+    <LoginScreen
+      onLogin={login}
+      onReserve={() => {
+        setReady(false)
+        setReserving(true)
+      }}
+    />
+  )
+  if ((reserving || session) && !ready) {
+    view = (
+      <div className="flex min-h-svh items-center justify-center text-sm text-stone-500">
+        Wczytywanie lekcji…
+      </div>
+    )
+  } else if (reserving) {
     view = (
       <BookingView
         freeHours={freeHours}
         lessons={lessons}
         bookings={bookings}
         statuses={statuses}
+        closed={closed}
         notice={bookingError}
         onSubmit={onReserve}
         onBack={() => setReserving(false)}
       />
-    )
-  } else if (session && !ready) {
-    view = (
-      <div className="flex min-h-svh items-center justify-center text-sm text-stone-500">
-        Wczytywanie lekcji…
-      </div>
     )
   } else if (session?.role === "admin") {
     view = (
@@ -228,6 +267,7 @@ export default function App() {
         onCreateFree={onCreateFree}
         onUpdateFree={onUpdateFree}
         onDeleteFree={onDeleteFree}
+        tutors={session.tutors}
       />
     )
   } else if (session) {

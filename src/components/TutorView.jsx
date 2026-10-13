@@ -1,6 +1,7 @@
 import { useState } from "react"
 import { AvailabilitySwitch, FreeHours } from "./Availability"
 import CalendarBoard from "./CalendarBoard"
+import PushNotice from "./PushNotice"
 import Reservations from "./Reservations"
 import Shell from "./Shell"
 
@@ -28,6 +29,7 @@ export default function TutorView({
 
   return (
     <Shell title={tutor} subtitle="Wpisuj zajęcia" notice={notice} onLogout={onLogout}>
+      <PushNotice tutor={tutor} />
       <div className="mb-4">
         <AvailabilitySwitch taking={taking} onChange={onStatus} />
       </div>

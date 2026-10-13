@@ -5,8 +5,6 @@ import CalendarBoard from "./CalendarBoard"
 import Reservations from "./Reservations"
 import Shell from "./Shell"
 import {
-  TEST_TUTOR,
-  TUTORS,
   dateInMonth,
   formatMinutes,
   formatMoney,
@@ -51,10 +49,11 @@ export default function AdminView({
   onCreateFree,
   onUpdateFree,
   onDeleteFree,
+  tutors,
 }) {
   const [year, setYear] = useState(() => new Date().getFullYear())
   const [month, setMonth] = useState(() => new Date().getMonth())
-  const [tutor, setTutor] = useState(TUTORS[0])
+  const [tutor, setTutor] = useState(tutors[0]?.name ?? "")
   const [today] = useState(() => todayKey())
   const visible = lessons.filter((lesson) => lesson.tutor === tutor)
   const monthLessons = lessons.filter(
@@ -76,7 +75,9 @@ export default function AdminView({
         </div>
       </div>
       <div className="mb-4 grid gap-3 sm:grid-cols-3">
-        {TUTORS.map((name) => {
+        {tutors.map((item) => {
+          const name = item.name
+          const test = item.countsMoney === false
           const own = lessons.filter(
             (lesson) => lesson.tutor === name && dateInMonth(lesson.date, year, month),
           )
@@ -106,17 +107,17 @@ export default function AdminView({
             >
               <span
                 className={`text-xs font-semibold tracking-wide text-stone-500 ${
-                  name === TEST_TUTOR ? "" : "uppercase"
+                  test ? "" : "uppercase"
                 }`}
               >
-                {name === TEST_TUTOR ? "konto testowe" : "Korepetytor"}
+                {test ? "konto testowe" : "Korepetytor"}
               </span>
               <span className="mt-1 block text-lg font-semibold text-stone-900">{name}</span>
               <StatusBadge taking={taking} />
               <span className="mt-2 block text-sm font-medium text-stone-800">
                 {students} {studentsLabel(students)}
               </span>
-              {name !== TEST_TUTOR && (
+              {!test && (
                 <span className="mt-1 block text-sm font-medium text-stone-900">Zarobił {formatMoney(earned)}</span>
               )}
               <span className="mt-2 block text-sm text-stone-600">

@@ -1,20 +1,10 @@
 const LESSONS_KEY = "grafik.lessons.v1"
 const SESSION_KEY = "grafik.session.v1"
 
-export const TUTORS = ["Tomek", "Wojtek", "Szymon", "Test"]
-export const TEST_TUTOR = "Test"
-export const ADMIN_LOGIN = "AdminLogin"
-
 export const LEVEL_PRICE = {
   rozszerzenie: 100,
   podstawa: 90,
   podstawowka: 90,
-}
-
-export const TUTOR_PROFIT = {
-  Tomek: 30,
-  Wojtek: 20,
-  Szymon: 30,
 }
 
 export const DURATIONS = [45, 60, 90]
@@ -47,30 +37,38 @@ const MONTHS = [
   "grudzień",
 ]
 
-export function matchLogin(raw) {
-  const value = String(raw ?? "").trim().toLowerCase()
-  if (!value) return null
-  if (value === ADMIN_LOGIN.toLowerCase()) {
-    return { role: "admin", name: ADMIN_LOGIN }
+const tutorsByName = new Map()
+
+export function rememberTutors(tutors) {
+  tutorsByName.clear()
+  for (const tutor of tutors ?? []) {
+    if (tutor?.name) tutorsByName.set(tutor.name, tutor)
   }
-  const tutor = TUTORS.find((name) => name.toLowerCase() === value)
-  if (tutor) return { role: "tutor", name: tutor }
-  return null
+}
+
+export function countsMoney(name) {
+  const tutor = tutorsByName.get(name)
+  if (!tutor) return true
+  return tutor.countsMoney !== false
+}
+
+function validTutor(item) {
+  return item && typeof item.name === "string" && typeof item.countsMoney === "boolean"
 }
 
 function readSession(storage) {
   try {
-    const parsed = JSON.parse(storage.getItem(SESSION_KEY) || "null")
-    if (parsed?.role === "admin" && parsed?.name === ADMIN_LOGIN) return parsed
-    if (parsed?.role === "tutor" && TUTORS.includes(parsed?.name)) return parsed
-    return null
+    return JSON.parse(storage.getItem(SESSION_KEY) || "null")
   } catch {
     return null
   }
 }
 
 export function loadSession() {
-  return readSession(localStorage) ?? readSession(sessionStorage)
+  const parsed = readSession(localStorage) ?? readSession(sessionStorage)
+  if (parsed?.role === "admin" && Array.isArray(parsed.tutors) && parsed.tutors.every(validTutor)) return parsed
+  if (parsed?.role === "tutor" && validTutor(parsed)) return parsed
+  return null
 }
 
 export function saveSession(session, remember) {
@@ -93,9 +91,7 @@ export function loadLessons() {
   try {
     const parsed = JSON.parse(localStorage.getItem(LESSONS_KEY) || "[]")
     if (!Array.isArray(parsed)) return []
-    return parsed.filter(
-      (lesson) => lesson && TUTORS.includes(lesson.tutor) && typeof lesson.date === "string",
-    )
+    return parsed.filter((lesson) => lesson && typeof lesson.tutor === "string" && typeof lesson.date === "string")
   } catch {
     return []
   }
@@ -155,13 +151,13 @@ export function buildMonthCells(year, month) {
 }
 
 export function lessonRevenue(lesson) {
-  if (lesson.tutor === TEST_TUTOR || lesson.held !== true) return 0
+  if (!countsMoney(lesson.tutor) || lesson.held !== true) return 0
   return LEVEL_PRICE[lesson.level] ?? 0
 }
 
 export function lessonProfit(lesson) {
-  if (lesson.tutor === TEST_TUTOR || lesson.held !== true) return 0
-  return TUTOR_PROFIT[lesson.tutor] ?? 0
+  if (!countsMoney(lesson.tutor) || lesson.held !== true) return 0
+  return tutorsByName.get(lesson.tutor)?.profit ?? 0
 }
 
 export function formatMoney(amount) {

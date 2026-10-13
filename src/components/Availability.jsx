@@ -2,6 +2,13 @@ import { useState } from "react"
 import { motion } from "framer-motion"
 import { addDays, formatShort, todayKey, weeklyDates } from "../lib/store"
 
+const WEEKDAY_NAMES = ["Poniedziałek", "Wtorek", "Środa", "Czwartek", "Piątek", "Sobota", "Niedziela"]
+
+function weekdayName(key) {
+  const [year, month, day] = key.split("-").map(Number)
+  return WEEKDAY_NAMES[(new Date(year, month - 1, day).getDay() + 6) % 7]
+}
+
 export function AvailabilitySwitch({ taking, disabled, onChange }) {
   const options = [
     { value: true, label: "Mam wolne godziny, biorę" },
@@ -221,45 +228,49 @@ export function FreeHours({ tutor, hours, canEdit, onCreate, onUpdate, onDelete 
       {mine.length === 0 ? (
         <p className="mt-4 text-sm text-stone-500">Nie ma jeszcze wolnych godzin.</p>
       ) : (
-        <div className="mt-4 space-y-2">
+        <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
           {visible.map((slot) => (
             <div
               key={slot.id}
-              className={`flex items-center justify-between gap-3 rounded-2xl border px-3 py-3 ${
-                editingId === slot.id ? "border-teal-800 bg-teal-50" : "border-stone-200"
+              className={`flex min-h-36 flex-col rounded-2xl border p-3 ${
+                editingId === slot.id ? "border-teal-800 bg-teal-50" : "border-stone-200 bg-white"
               }`}
             >
-              <p className="text-sm font-medium text-stone-900">
-                {formatShort(slot.date)} · {slot.startsAt}–{slot.endsAt}
+              <p className={`text-xs font-semibold uppercase tracking-wide ${editingId === slot.id ? "text-teal-800" : "text-stone-500"}`}>
+                {weekdayName(slot.date)}
+              </p>
+              <p className={`mt-1 text-base font-semibold leading-tight ${editingId === slot.id ? "text-teal-950" : "text-stone-900"}`}>
+                {formatShort(slot.date)}
+              </p>
+              <p className={`mt-3 text-sm font-semibold leading-tight ${editingId === slot.id ? "text-teal-950" : "text-stone-900"}`}>
+                {slot.startsAt}–{slot.endsAt}
               </p>
               {canEdit && (
-                confirmId === slot.id ? (
-                  <span className="flex gap-2">
-                    <button type="button" onClick={() => remove(slot.id)} className="text-sm font-medium text-red-700">
-                      Usuń
-                    </button>
-                    <button type="button" onClick={() => setConfirmId(null)} className="text-sm text-stone-500">
-                      Anuluj
-                    </button>
-                  </span>
-                ) : (
-                  <span className="flex gap-3">
-                    <button
-                      type="button"
-                      onClick={() => beginEdit(slot)}
-                      className="text-sm font-medium text-teal-800"
-                    >
-                      Edytuj
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setConfirmId(slot.id)}
-                      className="text-sm font-medium text-stone-500 hover:text-red-700"
-                    >
-                      Usuń
-                    </button>
-                  </span>
-                )
+                <div className="mt-auto flex flex-wrap gap-x-3 gap-y-1 pt-3">
+                  {confirmId === slot.id ? (
+                    <>
+                      <button type="button" onClick={() => remove(slot.id)} className="text-sm font-medium text-red-700">
+                        Usuń
+                      </button>
+                      <button type="button" onClick={() => setConfirmId(null)} className="text-sm text-stone-500">
+                        Anuluj
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button type="button" onClick={() => beginEdit(slot)} className="text-sm font-medium text-teal-800">
+                        Edytuj
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmId(slot.id)}
+                        className="text-sm font-medium text-stone-500 hover:text-red-700"
+                      >
+                        Usuń
+                      </button>
+                    </>
+                  )}
+                </div>
               )}
             </div>
           ))}
@@ -267,7 +278,7 @@ export function FreeHours({ tutor, hours, canEdit, onCreate, onUpdate, onDelete 
             <button
               type="button"
               onClick={() => setExpanded((current) => !current)}
-              className="text-sm font-medium text-teal-800"
+              className="col-span-full text-left text-sm font-medium text-teal-800"
             >
               {expanded ? "Zwiń" : `Pokaż wszystkie (${mine.length})`}
             </button>

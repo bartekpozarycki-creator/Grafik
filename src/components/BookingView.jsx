@@ -15,7 +15,7 @@ const FAQ = [
   },
   {
     question: "Z kim będą zajęcia?",
-    answer: "Z Tomkiem, Wojtkiem albo Szymonem. Przy każdym terminie widać, kto ma wtedy wolne.",
+    answer: "Przy każdym terminie widać, kto ma wtedy wolne.",
   },
   {
     question: "Co jeśli nie ma pasującego terminu?",
@@ -75,7 +75,7 @@ function FaqList() {
   )
 }
 
-export default function BookingView({ freeHours, lessons, bookings, statuses, notice, onSubmit, onBack }) {
+export default function BookingView({ freeHours, lessons, bookings, statuses, closed = [], notice, onSubmit, onBack }) {
   const [clock] = useState(() => {
     const now = new Date()
     return { today: todayKey(), minutes: now.getHours() * 60 + now.getMinutes() }
@@ -91,6 +91,7 @@ export default function BookingView({ freeHours, lessons, bookings, statuses, no
     lessons,
     bookings,
     statuses,
+    closed,
     today: clock.today,
     nowMinutes: clock.minutes,
   })

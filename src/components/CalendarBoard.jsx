@@ -10,7 +10,6 @@ import {
   dateKey,
   formatDay,
   formatMinutes,
-  formatShort,
   labelOf,
   lessonsLabel,
   monthTitle,
@@ -24,6 +23,15 @@ const EMPTY_FORM = {
   duration: 60,
   kind: "zwykla",
   level: "podstawa",
+}
+
+function lessonSpan(lesson) {
+  if (!lesson.startsAt) return ""
+  const [hour, minute] = String(lesson.startsAt).slice(0, 5).split(":").map(Number)
+  const total = Math.min(24 * 60, hour * 60 + minute + Number(lesson.duration || 0))
+  const endHour = Math.floor(total / 60)
+  const endMinute = total % 60
+  return `${String(lesson.startsAt).slice(0, 5)}–${String(endHour).padStart(2, "0")}:${String(endMinute).padStart(2, "0")}`
 }
 
 const DURATION_OPTIONS = DURATIONS.map((value) => ({ id: value, label: `${value} min` }))
@@ -59,20 +67,34 @@ function Badge({ children, tone = "stone" }) {
   )
 }
 
+function awaitsHeldMark(lesson, today) {
+  return lesson.held == null && lesson.date <= today
+}
+
 function heldBadge(lesson) {
   if (lesson.held === true) return { text: "Odbyły się", tone: "teal" }
   if (lesson.held === false) return { text: "Nie odbyły się", tone: "rose" }
   return { text: "Nieoznaczone", tone: "stone" }
 }
 
-function HeldMark({ held, onChange }) {
+function HeldMark({ held, blink, disabled, onChange }) {
   const options = [
     { value: true, label: "Odbyły się", active: "border-teal-800 bg-teal-800 text-white" },
     { value: false, label: "Nie odbyły się", active: "border-rose-800 bg-rose-800 text-white" },
   ]
   return (
     <div className="mt-3">
-      {held == null && <p className="mb-2 text-xs font-medium text-stone-500">Zaznacz, czy zajęcia się odbyły.</p>}
+      {disabled ? (
+        <p className="mb-2 text-xs font-medium text-stone-400">
+          Zaznaczenie będzie możliwe w dniu zajęć.
+        </p>
+      ) : (
+        held == null && (
+          <p className={cx("mb-2 text-xs font-medium text-stone-500", blink && "animate-pulse")}>
+            Zaznacz, czy zajęcia się odbyły.
+          </p>
+        )
+      )}
       <div className="grid grid-cols-2 gap-2">
         {options.map((option) => {
           const selected = held === option.value
@@ -80,11 +102,17 @@ function HeldMark({ held, onChange }) {
             <button
               key={option.label}
               type="button"
+              disabled={disabled}
               onClick={() => {
-                if (!selected) onChange(option.value)
+                if (disabled || selected) return
+                onChange(option.value)
               }}
               className={`flex h-10 items-center justify-center rounded-xl border px-3 text-sm font-semibold leading-none transition ${
-                selected ? option.active : "border-stone-200 bg-white text-stone-700 hover:border-stone-300"
+                disabled
+                  ? "cursor-not-allowed border-stone-200 bg-stone-100 text-stone-400"
+                  : selected
+                    ? option.active
+                    : "border-stone-200 bg-white text-stone-700 hover:border-stone-300"
               }`}
             >
               {option.label}
@@ -121,13 +149,18 @@ function PaymentChecks({ lesson, onChange }) {
   )
 }
 
-function Stat({ label, value }) {
-  return (
-    <div className="rounded-2xl border border-stone-200 bg-white px-4 py-3">
-      <div className="text-[11px] font-semibold uppercase tracking-wide text-stone-500">{label}</div>
-      <div className="mt-1 text-lg font-semibold text-stone-900">{value}</div>
-    </div>
-  )
+function studentKey(lesson) {
+  const discord = lesson.discord.trim().toLowerCase()
+  return discord || lesson.studentName.trim().toLowerCase()
+}
+
+function kindCountLabel(count, one, few, many) {
+  const amount = Math.abs(Number(count) || 0)
+  if (amount === 1) return `${amount} ${one}`
+  const mod10 = amount % 10
+  const mod100 = amount % 100
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return `${amount} ${few}`
+  return `${amount} ${many}`
 }
 
 function ChoiceGroup({ label, value, options, onChange }) {
@@ -179,6 +212,7 @@ export default function CalendarBoard({
   const [confirmId, setConfirmId] = useState(null)
   const [saving, setSaving] = useState(false)
   const [payError, setPayError] = useState("")
+  const [studentScope, setStudentScope] = useState("wszystko")
 
   const monthLessons = lessons
     .filter((lesson) => dateInMonth(lesson.date, year, month))
@@ -188,7 +222,6 @@ export default function CalendarBoard({
         (a.startsAt || "99:99").localeCompare(b.startsAt || "99:99") ||
         (a.createdAt ?? 0) - (b.createdAt ?? 0),
     )
-
   const byDate = new Map()
   for (const lesson of monthLessons) {
     const bucket = byDate.get(lesson.date)
@@ -207,9 +240,33 @@ export default function CalendarBoard({
     bucket.sort((a, b) => a.startsAt.localeCompare(b.startsAt))
   }
 
-  const minutes = monthLessons.reduce((sum, lesson) => sum + Number(lesson.duration || 0), 0)
-  const regular = monthLessons.filter((lesson) => lesson.kind === "zwykla").length
-  const trial = monthLessons.filter((lesson) => lesson.kind === "probna").length
+  const scopedLessons = lessons.filter((lesson) => {
+    if (studentScope === "miesiac") return dateInMonth(lesson.date, year, month)
+    if (studentScope === "rok") return lesson.date.startsWith(`${year}-`)
+    return true
+  })
+  const students = [...scopedLessons.reduce((groups, lesson) => {
+    const key = studentKey(lesson)
+    const group = groups.get(key)
+    if (group) group.push(lesson)
+    else groups.set(key, [lesson])
+    return groups
+  }, new Map()).values()]
+    .map((group) => {
+      const latest = [...group].sort(
+        (a, b) => b.date.localeCompare(a.date) || (b.createdAt ?? 0) - (a.createdAt ?? 0),
+      )[0]
+      return {
+        key: studentKey(latest),
+        name: latest.studentName,
+        discord: latest.discord,
+        levels: [...new Set(group.map((lesson) => lesson.level))],
+        regular: group.filter((lesson) => lesson.kind === "zwykla").length,
+        trial: group.filter((lesson) => lesson.kind === "probna").length,
+        minutes: group.reduce((sum, lesson) => sum + Number(lesson.duration || 0), 0),
+      }
+    })
+    .sort((a, b) => a.name.localeCompare(b.name, "pl"))
   const cells = buildMonthCells(year, month)
   const today = todayKey()
   const dayLessons = selected ? (byDate.get(selected) ?? []) : []
@@ -225,6 +282,7 @@ export default function CalendarBoard({
   ].sort((a, b) => a.start.localeCompare(b.start))
 
   async function markHeld(lesson, held) {
+    if (lesson.date > today) return
     setPayError("")
     try {
       await onLessonHeld(lesson.id, held)
@@ -260,21 +318,13 @@ export default function CalendarBoard({
   function goToday() {
     const now = new Date()
     onYearMonth(now.getFullYear(), now.getMonth())
-    setSelected(todayKey())
+    setSelected(null)
     resetForm()
   }
 
   function pickDay(key) {
     setSelected((current) => (current === key ? null : key))
     resetForm()
-  }
-
-  function showDay(key) {
-    setSelected(key)
-    resetForm()
-    requestAnimationFrame(() => {
-      document.getElementById("day-panel")?.scrollIntoView({ behavior: "smooth", block: "nearest" })
-    })
   }
 
   function editLesson(lesson) {
@@ -352,28 +402,7 @@ export default function CalendarBoard({
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <Stat label="Czas" value={formatMinutes(minutes)} />
-        <Stat label="Lekcje" value={monthLessons.length} />
-        <Stat label="Zwykłe" value={regular} />
-        <Stat label="Próbne" value={trial} />
-      </div>
-
-      <div className="flex flex-wrap gap-2">
-        {LEVELS.map((level) => {
-          const count = monthLessons.filter((lesson) => lesson.level === level.id).length
-          return (
-            <span
-              key={level.id}
-              className="rounded-full bg-white px-3 py-1 text-xs font-medium text-stone-600 ring-1 ring-stone-200"
-            >
-              {level.label}: {count}
-            </span>
-          )
-        })}
-      </div>
-
-      <section className="rounded-3xl border border-stone-200 bg-white p-3 shadow-sm sm:p-5">
+      <section id="calendar-board" className="rounded-3xl border border-stone-200 bg-white p-3 shadow-sm sm:p-5">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="text-xl font-semibold text-stone-900">{monthTitle(year, month)}</h2>
@@ -408,13 +437,7 @@ export default function CalendarBoard({
           </div>
         </div>
 
-        <motion.div
-          key={`${year}-${month}`}
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ duration: 0.18 }}
-          className="grid grid-cols-7 gap-1 sm:gap-2"
-        >
+                <div className="grid grid-cols-7 gap-1 sm:gap-2">
           {WEEKDAYS.map((day, index) => (
             <div
               key={day}
@@ -477,19 +500,20 @@ export default function CalendarBoard({
                       <>
                         {visible.map((chip) =>
                           chip.lesson ? (
-                            <div
+                            <motion.div
                               key={chip.id}
-                              title={`${chip.lesson.startsAt ? `${chip.lesson.startsAt} · ` : ""}${chip.lesson.studentName} · ${chip.lesson.duration} min`}
+                              title={`${lessonSpan(chip.lesson) || chip.lesson.studentName} · ${chip.lesson.studentName}`}
                               className={cx(
                                 "flex h-5 items-center overflow-hidden rounded-md px-1.5 text-[11px] font-medium leading-none text-ellipsis whitespace-nowrap",
+                                awaitsHeldMark(chip.lesson, today) && "animate-pulse",
                                 chip.lesson.kind === "probna"
                                   ? "bg-amber-100 text-amber-950"
                                   : "bg-teal-100 text-teal-950",
                               )}
                             >
-                              {chip.lesson.startsAt ? `${chip.lesson.startsAt} ` : ""}
+                              {lessonSpan(chip.lesson) ? `${lessonSpan(chip.lesson)} ` : ""}
                               {chip.lesson.studentName}
-                            </div>
+                            </motion.div>
                           ) : (
                             <div
                               key={chip.id}
@@ -500,7 +524,12 @@ export default function CalendarBoard({
                           ),
                         )}
                         {chips.length > visible.length && (
-                          <div className="flex h-5 items-center px-1 text-[11px] font-medium leading-none text-stone-500">
+                          <div
+                            className={cx(
+                              "flex h-5 items-center px-1 text-[11px] font-medium leading-none text-stone-500",
+                              chips.slice(3).some((chip) => chip.lesson && awaitsHeldMark(chip.lesson, today)) && "animate-pulse",
+                            )}
+                          >
                             +{chips.length - visible.length}
                           </div>
                         )}
@@ -515,12 +544,15 @@ export default function CalendarBoard({
                         key={lesson.id}
                         className={cx(
                           "h-1.5 w-1.5 rounded-full",
+                          awaitsHeldMark(lesson, today) && "animate-pulse",
                           lesson.kind === "probna" ? "bg-amber-500" : "bg-teal-700",
                         )}
                       />
                     ))
                   ) : items.length > 4 ? (
-                    <span className="text-[10px] font-semibold text-teal-800">{items.length}</span>
+                    <span className={cx("text-[10px] font-semibold text-teal-800", items.some((lesson) => awaitsHeldMark(lesson, today)) && "animate-pulse")}>
+                      {items.length}
+                    </span>
                   ) : null}
                   {slots.length > 0 && (
                     <span className="h-1.5 w-1.5 rounded-sm bg-sky-500" />
@@ -529,7 +561,7 @@ export default function CalendarBoard({
               </button>
             )
           })}
-        </motion.div>
+                </div>
 
         <div className="mt-3 flex gap-4 text-xs text-stone-500">
           <span className="inline-flex items-center gap-1.5">
@@ -548,7 +580,7 @@ export default function CalendarBoard({
       </section>
 
       <AnimatePresence mode="wait">
-        {selected ? (
+        {selected && (
           <motion.section
             id="day-panel"
             key={selected}
@@ -559,12 +591,12 @@ export default function CalendarBoard({
             className="rounded-3xl border border-stone-200 bg-white p-4 shadow-sm sm:p-5"
           >
             <h3 className="text-lg font-semibold text-stone-900">{formatDay(selected)}</h3>
-            {formError.form && <p className="mt-2 text-sm text-red-700">{formError.form}</p>}
+                            {formError.form && <p className="mt-2 text-sm text-red-700">{formError.form}</p>}
             {payError && <p className="mt-2 text-sm text-red-700">{payError}</p>}
             <div className={cx("mt-4 grid gap-6", canEdit && "lg:grid-cols-2")}>
-              <div className="space-y-3">
+              <div className="flex flex-col gap-3">
                 {dayEntries.length === 0 && (
-                  <p className="rounded-2xl border border-dashed border-stone-300 px-4 py-6 text-sm text-stone-500">
+                  <p className="flex flex-1 items-center justify-center rounded-2xl border border-dashed border-stone-300 px-4 py-6 text-center text-sm text-stone-500">
                     Brak lekcji w tym dniu.
                   </p>
                 )}
@@ -587,6 +619,7 @@ export default function CalendarBoard({
                       initial={{ opacity: 0, y: 6 }}
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0 }}
+                      transition={{ duration: 0.2 }}
                       className={cx(
                         "rounded-2xl border px-3 py-3",
                         editingId === lesson.id ? "border-teal-800 bg-teal-50" : "border-stone-200",
@@ -639,7 +672,7 @@ export default function CalendarBoard({
                         <Badge tone={lesson.kind === "probna" ? "amber" : "teal"}>
                           {labelOf(KINDS, lesson.kind)}
                         </Badge>
-                        <Badge>{lesson.startsAt ? `${lesson.startsAt} · ` : ""}{lesson.duration} min</Badge>
+                        <Badge>{lessonSpan(lesson) || `${lesson.duration} min`}</Badge>
                         <Badge tone={LEVEL_TONE[lesson.level] ?? "stone"}>
                           {labelOf(LEVELS, lesson.level)}
                         </Badge>
@@ -648,7 +681,14 @@ export default function CalendarBoard({
                           <PaymentChecks lesson={lesson} onChange={(patch) => markPaid(lesson, patch)} />
                         )}
                       </div>
-                      {canEdit && <HeldMark held={lesson.held} onChange={(held) => markHeld(lesson, held)} />}
+                      {canEdit && (
+                        <HeldMark
+                          held={lesson.held}
+                          blink={awaitsHeldMark(lesson, today)}
+                          disabled={lesson.date > today}
+                          onChange={(held) => markHeld(lesson, held)}
+                        />
+                      )}
                     </motion.article>
                         )
                       })()
@@ -760,99 +800,81 @@ export default function CalendarBoard({
               ) : null}
             </div>
           </motion.section>
-        ) : (
-          <motion.p
-            key="hint"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="rounded-3xl border border-dashed border-stone-300 bg-white/70 px-4 py-6 text-center text-sm text-stone-500"
-          >
-            {canEdit ? "Kliknij dzień w kalendarzu, żeby wpisać lekcję." : "Kliknij dzień, żeby zobaczyć lekcje."}
-          </motion.p>
         )}
       </AnimatePresence>
 
-      <section className="rounded-3xl border border-stone-200 bg-white p-4 shadow-sm sm:p-5">
-        <h2 className="text-lg font-semibold text-stone-900">Ten miesiąc</h2>
-        {payError && !selected && <p className="mt-2 text-sm text-red-700">{payError}</p>}
-        {monthLessons.length === 0 ? (
-          <p className="mt-3 text-sm text-stone-500">W tym miesiącu nie ma jeszcze lekcji.</p>
-        ) : (
-          <div className="mt-3 space-y-2">
-            {monthLessons.map((lesson) => (
-              <div
-                key={lesson.id}
+
+      <section>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2 className="text-lg font-semibold text-stone-900">Uczniowie</h2>
+          <div className="flex gap-1.5">
+            {[
+              ["miesiac", "Miesiąc"],
+              ["rok", "Rok"],
+              ["wszystko", "Wszystko"],
+            ].map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                aria-pressed={studentScope === id}
+                onClick={() => setStudentScope(id)}
                 className={cx(
-                  "flex flex-col gap-3 rounded-2xl border px-3 py-3 sm:flex-row sm:items-center sm:justify-between",
-                  lesson.date === selected ? "border-teal-800 bg-teal-50" : "border-stone-200",
+                  "rounded-full px-3 py-1.5 text-sm font-medium transition",
+                  studentScope === id
+                    ? "bg-stone-900 text-white"
+                    : "bg-stone-100 text-stone-700 hover:bg-stone-200",
                 )}
               >
-                <div className="min-w-0">
-                  <p className="font-medium text-stone-900">{lesson.studentName}</p>
-                  <p className="truncate text-sm text-stone-500">Discord: {lesson.discord}</p>
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <AnimatePresence mode="wait" initial={false}>
+          <motion.div
+            key={studentScope}
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 4 }}
+            transition={{ duration: 0.18 }}
+          >
+        {students.length === 0 ? (
+          <p className="mt-3 text-sm text-stone-500">
+            {studentScope === "miesiac"
+              ? "W tym miesiącu nie ma uczniów."
+              : studentScope === "rok"
+                ? "W tym roku nie ma uczniów."
+                : "Nie ma jeszcze uczniów."}
+          </p>
+        ) : (
+          <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+            {students.map((student) => (
+              <div
+                key={student.key}
+                className="flex min-h-32 flex-col rounded-2xl border border-stone-200 bg-white p-3"
+              >
+                <p className="truncate text-sm font-semibold text-stone-900">{student.name}</p>
+                <p className="mt-0.5 truncate text-xs text-stone-500">{student.discord}</p>
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {student.levels.map((level) => (
+                    <Badge key={level} tone={LEVEL_TONE[level] ?? "stone"}>
+                      {labelOf(LEVELS, level)}
+                    </Badge>
+                  ))}
                 </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => showDay(lesson.date)}
-                    className="text-sm font-medium text-teal-800"
-                  >
-                    {formatShort(lesson.date)}
-                  </button>
-                  <Badge>{lesson.startsAt ? `${lesson.startsAt} · ` : ""}{lesson.duration} min</Badge>
-                  <Badge tone={lesson.kind === "probna" ? "amber" : "teal"}>
-                    {labelOf(KINDS, lesson.kind)}
-                  </Badge>
-                  <Badge tone={LEVEL_TONE[lesson.level] ?? "stone"}>
-                    {labelOf(LEVELS, lesson.level)}
-                  </Badge>
-                  <Badge tone={heldBadge(lesson).tone}>{heldBadge(lesson).text}</Badge>
-                  {canMarkPayment && (
-                    <PaymentChecks lesson={lesson} onChange={(patch) => markPaid(lesson, patch)} />
-                  )}
-                  {canEdit && (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => editLesson(lesson)}
-                        className="text-sm font-medium text-stone-600"
-                      >
-                        Edytuj
-                      </button>
-                      {confirmId === lesson.id ? (
-                        <>
-                          <button
-                            type="button"
-                            onClick={() => removeLesson(lesson.id)}
-                            className="text-sm font-medium text-red-700"
-                          >
-                            Usuń
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setConfirmId(null)}
-                            className="text-sm text-stone-500"
-                          >
-                            Anuluj
-                          </button>
-                        </>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => setConfirmId(lesson.id)}
-                          className="text-sm font-medium text-stone-500 hover:text-red-700"
-                        >
-                          Usuń
-                        </button>
-                      )}
-                    </>
-                  )}
-                </div>
+                <p className="mt-auto pt-3 text-base font-semibold text-teal-950">
+                  {kindCountLabel(student.regular, "zwykła", "zwykłe", "zwykłych")}
+                </p>
+                <p className="text-xs font-medium text-stone-400">
+                  {kindCountLabel(student.trial, "próbna", "próbne", "próbnych")}
+                </p>
+                <p className="text-xs text-stone-500">{formatMinutes(student.minutes)}</p>
               </div>
             ))}
           </div>
         )}
+          </motion.div>
+        </AnimatePresence>
       </section>
     </div>
   )

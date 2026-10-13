@@ -1,8 +1,9 @@
-import { TEST_TUTOR } from "./store"
+import { notifyTutor } from "./push"
+import { countsMoney } from "./store"
 import { supabase } from "./supabase"
 
 export const TRIAL_MINUTES = 60
-const BUFFER_MINUTES = 15
+const BUFFER_MINUTES = 5
 
 function fail(error, fallback) {
   if (error?.code === "PGRST205") {
@@ -72,14 +73,17 @@ export async function createBooking(booking) {
     .select("*")
     .single()
   if (error) fail(error, "Nie udało się zapisać rezerwacji.")
-  return fromRow(data)
+  const row = fromRow(data)
+  await notifyTutor(row).catch(() => {})
+  return row
 }
 
-export function trialSlots({ freeHours, lessons, bookings, statuses, today, nowMinutes }) {
+export function trialSlots({ freeHours, lessons, bookings, statuses, closed = [], today, nowMinutes }) {
   const taken = []
+  const hidden = new Set(closed)
 
   for (const lesson of lessons) {
-    if (!lesson.startsAt || lesson.tutor === TEST_TUTOR) continue
+    if (!lesson.startsAt || hidden.has(lesson.tutor) || !countsMoney(lesson.tutor)) continue
     const start = toMinutes(lesson.startsAt)
     taken.push({
       tutor: lesson.tutor,
@@ -108,7 +112,7 @@ export function trialSlots({ freeHours, lessons, bookings, statuses, today, nowM
   )
 
   for (const block of blocks) {
-    if (block.tutor === TEST_TUTOR || statuses[block.tutor] === false || block.date < today) continue
+    if (hidden.has(block.tutor) || !countsMoney(block.tutor) || statuses[block.tutor] === false || block.date < today) continue
     let cursor = toMinutes(block.startsAt)
     const blockEnd = toMinutes(block.endsAt)
     while (cursor + TRIAL_MINUTES <= blockEnd) {

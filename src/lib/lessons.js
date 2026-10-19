@@ -34,7 +34,7 @@ function fromRow(row) {
     level: row.level,
     startsAt: row.starts_at ? String(row.starts_at).slice(0, 5) : "",
     held: "held" in row ? (row.held === true ? true : row.held === false ? false : null) : true,
-    studentPaid: row.kind === "probna" ? true : Boolean(row.student_paid),
+    studentPaid: Boolean(row.student_paid),
     tutorPaid: Boolean(row.tutor_paid),
     createdAt: row.created_at ? Date.parse(row.created_at) : 0,
   }
@@ -93,7 +93,6 @@ async function writeLesson(query, row) {
 export async function createLesson(lesson) {
   if (!supabase) throw new Error("Brak konfiguracji Supabase.")
   const row = toRow(lesson, false)
-  if (lesson.kind === "probna") row.student_paid = true
   const { data, error } = await writeLesson(
     (payload) => supabase.from("lessons").insert(payload).select("*").single(),
     row,
@@ -105,7 +104,6 @@ export async function createLesson(lesson) {
 export async function updateLesson(id, tutor, lesson) {
   if (!supabase) throw new Error("Brak konfiguracji Supabase.")
   const row = toRow({ ...lesson, tutor }, false)
-  if (lesson.kind === "probna") row.student_paid = true
   const { data, error } = await writeLesson(
     (payload) => supabase.from("lessons").update(payload).eq("id", id).eq("tutor", tutor).select("*").single(),
     row,

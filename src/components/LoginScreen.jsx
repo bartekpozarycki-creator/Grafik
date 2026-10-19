@@ -75,8 +75,7 @@ export default function LoginScreen({ onLogin, onReserve }) {
           transition={{ duration: 0.28 }}
           className="rounded-3xl border border-white/80 bg-white/90 p-6 shadow-xl shadow-stone-200/70 backdrop-blur sm:p-8"
         >
-          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-teal-800">Grafik</p>
-          <h1 className="mt-2 text-3xl font-semibold text-stone-900">Korepetycje Mateneza</h1>
+          <h1 className="text-3xl font-semibold text-stone-900">Grafik Zajęć</h1>
           <p className="mt-2 text-sm text-stone-600">Wpisz login.</p>
 
           <motion.form

@@ -1,6 +1,6 @@
 {
-  "name": "Korepetycje Mateneza",
-  "short_name": "Mateneza",
+  "name": "Grafik Zajęć",
+  "short_name": "Grafik Zajęć",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

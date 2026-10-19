@@ -14,12 +14,16 @@ import {
   updateFreeHour,
   emptyStatuses,
   fetchFreeHours,
+  isExpiredFreeHour,
   fetchStatuses,
   saveTutorStatus,
 } from "./lib/availability"
 import { createLesson, deleteLesson, fetchLessons, setLessonHeld, setLessonPaid, updateLesson } from "./lib/lessons"
+import { createPersonalEvent, deletePersonalEvent, fetchPersonalEvents, personalSpan, updatePersonalEvent } from "./lib/personal"
+import { fetchParents, saveParent } from "./lib/parents"
+import { fetchPrices, savePrices } from "./lib/prices"
 import { forgetThisDevice } from "./lib/push"
-import { clearSession, loadSession, rememberTutors, saveSession } from "./lib/store"
+import { clearSession, currentPrices, loadSession, rememberPrices, rememberTutors, saveSession } from "./lib/store"
 
 export default function App() {
   const [session, setSession] = useState(() => {
@@ -29,6 +33,7 @@ export default function App() {
     return saved
   })
   const [lessons, setLessons] = useState([])
+  const [personalEvents, setPersonalEvents] = useState([])
   const [freeHours, setFreeHours] = useState([])
   const [statuses, setStatuses] = useState(emptyStatuses)
   const [closed, setClosed] = useState([])
@@ -37,6 +42,9 @@ export default function App() {
   const [reserving, setReserving] = useState(false)
   const [ready, setReady] = useState(!session)
   const [loadError, setLoadError] = useState("")
+  const [parents, setParents] = useState({})
+  const [prices, setPrices] = useState(() => currentPrices())
+  const [pricesNote, setPricesNote] = useState("")
   const revision = useRef(0)
   const screen = reserving ? "rezerwacja" : !session ? "guest" : !ready ? "loading" : session.name
 
@@ -61,6 +69,16 @@ export default function App() {
       } catch (error) {
         message = error.message
       }
+      if (session?.role === "tutor") {
+        try {
+          const rows = await fetchPersonalEvents(session.name)
+          if (isCurrent(id, seen)) setPersonalEvents(rows)
+        } catch (error) {
+          message = message ? `${message} ${error.message}` : error.message
+        }
+      } else if (isCurrent(id, seen)) {
+        setPersonalEvents([])
+      }
       try {
         const rows = await fetchBookings()
         if (isCurrent(id, seen)) {
@@ -69,6 +87,22 @@ export default function App() {
         }
       } catch (error) {
         if (isCurrent(id, seen)) setBookingError(error.message)
+      }
+      try {
+        const nextParents = await fetchParents()
+        if (isCurrent(id, seen)) setParents(nextParents)
+      } catch (error) {
+        message = message ? `${message} ${error.message}` : error.message
+      }
+      try {
+        const nextPrices = await fetchPrices()
+        if (isCurrent(id, seen)) {
+          rememberPrices(nextPrices)
+          setPrices(nextPrices)
+          setPricesNote("")
+        }
+      } catch (error) {
+        if (isCurrent(id, seen)) setPricesNote(error.message)
       }
       try {
         const [hours, nextStatuses] = await Promise.all([fetchFreeHours(), fetchStatuses(names)])
@@ -94,12 +128,32 @@ export default function App() {
     }
   }, [session, reserving])
 
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setFreeHours((current) => {
+        const stale = current.filter((slot) => isExpiredFreeHour(slot))
+        if (!stale.length) return current
+        for (const slot of stale) deleteFreeHour(slot.id, slot.tutor).catch(() => {})
+        const gone = new Set(stale.map((slot) => slot.id))
+        return current.filter((slot) => !gone.has(slot.id))
+      })
+    }, 60000)
+    return () => clearInterval(timer)
+  }, [])
+
   function login(next, remember) {
     if (next.role === "admin") rememberTutors(next.tutors)
     else rememberTutors([next])
     setReady(false)
     setSession(next)
     saveSession(next, remember)
+  }
+
+  async function onSavePrices(next) {
+    const saved = await savePrices(next)
+    rememberPrices(saved)
+    setPrices(saved)
+    setPricesNote("")
   }
 
   function logout() {
@@ -109,10 +163,18 @@ export default function App() {
     setSession(null)
     clearSession()
     setLessons([])
+    setPersonalEvents([])
     setFreeHours([])
     setBookings([])
     setStatuses(emptyStatuses())
     setClosed([])
+    setParents({})
+  }
+
+  async function onSaveParent(studentKey, info) {
+    const saved = await saveParent(studentKey, info)
+    setParents((current) => ({ ...current, [studentKey]: saved }))
+    return saved
   }
 
   async function punchFreeTime(tutor, lesson) {
@@ -156,6 +218,34 @@ export default function App() {
     setLessons((current) => current.filter((item) => item.id !== id))
   }
 
+  async function onCreatePersonal(tutor, data) {
+    const event = await createPersonalEvent({ ...data, tutor })
+    revision.current += 1
+    setPersonalEvents((current) => [...current, event])
+    try {
+      await punchFreeTime(tutor, { date: event.date, startsAt: event.startsAt, duration: personalSpan(event) })
+    } catch (error) {
+      setLoadError(error.message)
+    }
+  }
+
+  async function onUpdatePersonal(tutor, id, data) {
+    const event = await updatePersonalEvent(id, tutor, data)
+    revision.current += 1
+    setPersonalEvents((current) => current.map((item) => (item.id === id ? event : item)))
+    try {
+      await punchFreeTime(tutor, { date: event.date, startsAt: event.startsAt, duration: personalSpan(event) })
+    } catch (error) {
+      setLoadError(error.message)
+    }
+  }
+
+  async function onDeletePersonal(tutor, id) {
+    await deletePersonalEvent(id, tutor)
+    revision.current += 1
+    setPersonalEvents((current) => current.filter((item) => item.id !== id))
+  }
+
   async function onLessonHeld(id, held) {
     const lesson = await setLessonHeld(id, held)
     revision.current += 1
@@ -182,9 +272,15 @@ export default function App() {
   }
 
   async function onCreateFree(tutor, entries) {
+    const blocks = [
+      ...lessons.filter((lesson) => lesson.tutor === tutor),
+      ...personalEvents
+        .filter((event) => event.tutor === tutor)
+        .map((event) => ({ ...event, duration: personalSpan(event) })),
+    ]
     const slots = await addFreeHours(
       entries.map((entry) => ({ ...entry, tutor })),
-      lessons.filter((lesson) => lesson.tutor === tutor),
+      blocks,
     )
     const dates = new Set(entries.map((entry) => entry.date))
     revision.current += 1
@@ -195,12 +291,13 @@ export default function App() {
   }
 
   async function onUpdateFree(tutor, id, data) {
-    const slots = await changeFreeHour(
-      id,
-      tutor,
-      data,
-      lessons.filter((lesson) => lesson.tutor === tutor),
-    )
+    const blocks = [
+      ...lessons.filter((lesson) => lesson.tutor === tutor),
+      ...personalEvents
+        .filter((event) => event.tutor === tutor)
+        .map((event) => ({ ...event, duration: personalSpan(event) })),
+    ]
+    const slots = await changeFreeHour(id, tutor, data, blocks)
     revision.current += 1
     setFreeHours((current) => [
       ...current.filter((slot) => slot.tutor !== tutor || (slot.date !== data.date && slot.id !== id)),
@@ -259,8 +356,6 @@ export default function App() {
         lessons={lessons}
         freeHours={freeHours}
         statuses={statuses}
-        bookings={bookings}
-        bookingNotice={bookingError}
         notice={loadError}
         onLogout={logout}
         onLessonPaid={onLessonPaid}
@@ -268,6 +363,11 @@ export default function App() {
         onUpdateFree={onUpdateFree}
         onDeleteFree={onDeleteFree}
         tutors={session.tutors}
+        prices={prices}
+        pricesNote={pricesNote}
+        onSavePrices={onSavePrices}
+        parents={parents}
+        onSaveParent={onSaveParent}
       />
     )
   } else if (session) {
@@ -276,8 +376,6 @@ export default function App() {
         tutor={session.name}
         lessons={lessons}
         freeHours={freeHours}
-        bookings={bookings}
-        bookingNotice={bookingError}
         taking={statuses[session.name] !== false}
         notice={loadError}
         onLogout={logout}
@@ -289,6 +387,12 @@ export default function App() {
         onCreateFree={(entries) => onCreateFree(session.name, entries)}
         onUpdateFree={(id, data) => onUpdateFree(session.name, id, data)}
         onDeleteFree={(id) => onDeleteFree(session.name, id)}
+        personalEvents={personalEvents}
+        onCreatePersonal={(data) => onCreatePersonal(session.name, data)}
+        onUpdatePersonal={(id, data) => onUpdatePersonal(session.name, id, data)}
+        onDeletePersonal={(id) => onDeletePersonal(session.name, id)}
+        parents={parents}
+        onSaveParent={onSaveParent}
       />
     )
   }

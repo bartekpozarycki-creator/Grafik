@@ -1,10 +1,11 @@
 const LESSONS_KEY = "grafik.lessons.v1"
 const SESSION_KEY = "grafik.session.v1"
 
-export const LEVEL_PRICE = {
+export const DEFAULT_PRICES = {
   rozszerzenie: 100,
   podstawa: 90,
   podstawowka: 90,
+  studia: 100,
 }
 
 export const DURATIONS = [45, 60, 90]
@@ -15,9 +16,17 @@ export const KINDS = [
 ]
 
 export const LEVELS = [
+  { id: "rozszerzenie", label: "Rozszerzenie" },
   { id: "podstawa", label: "Podstawa" },
   { id: "podstawowka", label: "Podstawówka" },
-  { id: "rozszerzenie", label: "Rozszerzenie" },
+  { id: "studia", label: "Studia" },
+]
+
+export const PRICE_LEVELS = [
+  { id: "rozszerzenie", label: "Poziom rozszerzony" },
+  { id: "podstawa", label: "Poziom podstawowy" },
+  { id: "podstawowka", label: "Podstawówka" },
+  { id: "studia", label: "Studia" },
 ]
 
 export const WEEKDAYS = ["Pn", "Wt", "Śr", "Cz", "Pt", "So", "Nd"]
@@ -38,6 +47,31 @@ const MONTHS = [
 ]
 
 const tutorsByName = new Map()
+const pricesByLevel = new Map(Object.entries(DEFAULT_PRICES))
+
+export function rememberPrices(prices) {
+  pricesByLevel.clear()
+  for (const [level, price] of Object.entries({ ...DEFAULT_PRICES, ...(prices ?? {}) })) {
+    const value = Number(price)
+    if (Number.isFinite(value)) pricesByLevel.set(level, Math.max(0, value))
+  }
+}
+
+export function currentPrices() {
+  return Object.fromEntries(pricesByLevel)
+}
+
+function priceOf(level) {
+  return pricesByLevel.get(level) ?? 0
+}
+
+function hoursOf(lesson) {
+  return Number(lesson.duration || 0) / 60
+}
+
+function roundMoney(value) {
+  return Math.round((Number(value) || 0) * 100) / 100
+}
 
 export function rememberTutors(tutors) {
   tutorsByName.clear()
@@ -150,14 +184,37 @@ export function buildMonthCells(year, month) {
   return cells
 }
 
+export function attendedRegular(lesson) {
+  return lesson.kind === "zwykla" && lesson.held === true
+}
+
+export function countsAsStudent(lessons) {
+  return lessons.some(attendedRegular)
+}
+
+function countsTowardMoney(lesson) {
+  return lesson.kind !== "probna" && countsMoney(lesson.tutor) && lesson.held === true
+}
+
+function tutorShare(lesson) {
+  const hourly = Math.max(0, priceOf(lesson.level) - (tutorsByName.get(lesson.tutor)?.profit ?? 0))
+  return roundMoney(hourly * hoursOf(lesson))
+}
+
 export function lessonRevenue(lesson) {
-  if (!countsMoney(lesson.tutor) || lesson.held !== true) return 0
-  return LEVEL_PRICE[lesson.level] ?? 0
+  if (!countsTowardMoney(lesson) || !lesson.studentPaid) return 0
+  return roundMoney(priceOf(lesson.level) * hoursOf(lesson))
+}
+
+export function tutorEarning(lesson) {
+  if (!countsTowardMoney(lesson) || !lesson.tutorPaid) return 0
+  return tutorShare(lesson)
 }
 
 export function lessonProfit(lesson) {
-  if (!countsMoney(lesson.tutor) || lesson.held !== true) return 0
-  return tutorsByName.get(lesson.tutor)?.profit ?? 0
+  const revenue = lessonRevenue(lesson)
+  if (!revenue) return 0
+  return roundMoney(revenue - tutorShare(lesson))
 }
 
 export function formatMoney(amount) {

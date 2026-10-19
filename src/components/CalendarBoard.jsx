@@ -1,10 +1,12 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { AnimatePresence, motion } from "framer-motion"
+import { freeBreaks, shiftForBreak } from "../lib/availability"
 import {
   DURATIONS,
   KINDS,
   LEVELS,
   WEEKDAYS,
+  countsAsStudent,
   buildMonthCells,
   dateInMonth,
   dateKey,
@@ -25,13 +27,19 @@ const EMPTY_FORM = {
   level: "podstawa",
 }
 
-function lessonSpan(lesson) {
+function lessonEndsAt(lesson) {
   if (!lesson.startsAt) return ""
   const [hour, minute] = String(lesson.startsAt).slice(0, 5).split(":").map(Number)
   const total = Math.min(24 * 60, hour * 60 + minute + Number(lesson.duration || 0))
   const endHour = Math.floor(total / 60)
   const endMinute = total % 60
-  return `${String(lesson.startsAt).slice(0, 5)}–${String(endHour).padStart(2, "0")}:${String(endMinute).padStart(2, "0")}`
+  return `${String(endHour).padStart(2, "0")}:${String(endMinute).padStart(2, "0")}`
+}
+
+function lessonSpan(lesson) {
+  const endsAt = lessonEndsAt(lesson)
+  if (!endsAt) return ""
+  return `${String(lesson.startsAt).slice(0, 5)}–${endsAt}`
 }
 
 const DURATION_OPTIONS = DURATIONS.map((value) => ({ id: value, label: `${value} min` }))
@@ -40,10 +48,41 @@ const LEVEL_TONE = {
   podstawa: "stone",
   podstawowka: "sky",
   rozszerzenie: "violet",
+  studia: "amber",
 }
 
 function cx(...parts) {
   return parts.filter(Boolean).join(" ")
+}
+
+function useMinuteClock() {
+  const [now, setNow] = useState(() => new Date())
+  useEffect(() => {
+    let timer = 0
+    function arm() {
+      const current = new Date()
+      setNow(current)
+      const wait = 60000 - (current.getSeconds() * 1000 + current.getMilliseconds())
+      timer = window.setTimeout(arm, Math.max(wait, 250))
+    }
+    const current = new Date()
+    const wait = 60000 - (current.getSeconds() * 1000 + current.getMilliseconds())
+    timer = window.setTimeout(arm, Math.max(wait, 250))
+    return () => window.clearTimeout(timer)
+  }, [])
+  return now
+}
+
+function formatNow(date) {
+  const formatted = new Intl.DateTimeFormat("pl-PL", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date)
+  return formatted.charAt(0).toUpperCase() + formatted.slice(1)
 }
 
 function Badge({ children, tone = "stone" }) {
@@ -65,6 +104,80 @@ function Badge({ children, tone = "stone" }) {
       {children}
     </span>
   )
+}
+
+function BreakLength({ minutes, max, busy, onChange }) {
+  const [draft, setDraft] = useState(String(minutes))
+  const [seen, setSeen] = useState(minutes)
+  if (seen !== minutes) {
+    setSeen(minutes)
+    setDraft(String(minutes))
+  }
+
+  function commit(raw) {
+    const parsed = Number(raw)
+    if (!Number.isInteger(parsed)) {
+      setDraft(String(minutes))
+      return
+    }
+    const next = Math.max(0, Math.min(max, parsed))
+    setDraft(String(next))
+    if (next !== minutes) onChange(next)
+  }
+
+  return (
+    <span className="flex shrink-0 items-center gap-1">
+      <button
+        type="button"
+        aria-label="Krótsza przerwa"
+        disabled={busy || minutes <= 0}
+        onClick={() => onChange(minutes - 1)}
+        className="flex h-7 w-7 items-center justify-center rounded-lg border border-stone-400 bg-white text-base leading-none text-stone-800 transition hover:bg-stone-50 disabled:opacity-40"
+      >
+        −
+      </button>
+      <input
+        type="number"
+        inputMode="numeric"
+        min={0}
+        max={max}
+        step={1}
+        value={draft}
+        disabled={busy}
+        aria-label="Długość przerwy w minutach"
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={(event) => commit(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault()
+            commit(event.currentTarget.value)
+          }
+        }}
+        className="h-7 w-14 rounded-lg border border-stone-400 bg-white px-1 text-center text-sm tabular-nums outline-none ring-stone-600 focus:ring-2 disabled:opacity-40"
+      />
+      <button
+        type="button"
+        aria-label="Dłuższa przerwa"
+        disabled={busy || minutes >= max}
+        onClick={() => onChange(minutes + 1)}
+        className="flex h-7 w-7 items-center justify-center rounded-lg border border-stone-400 bg-white text-base leading-none text-stone-800 transition hover:bg-stone-50 disabled:opacity-40"
+      >
+        +
+      </button>
+    </span>
+  )
+}
+
+function lessonChip(lesson) {
+  if (lesson.kind === "probna") return "bg-amber-100 text-amber-950"
+  return "bg-teal-100 text-teal-950"
+}
+
+function payMarks(lesson) {
+  const marks = []
+  if (lesson.kind !== "probna" && !lesson.studentPaid) marks.push({ key: "student", className: "text-[#8B5A2B]" })
+  if (!lesson.tutorPaid) marks.push({ key: "tutor", className: "text-red-600" })
+  return marks
 }
 
 function awaitsHeldMark(lesson, today) {
@@ -127,15 +240,17 @@ function HeldMark({ held, blink, disabled, onChange }) {
 function PaymentChecks({ lesson, onChange }) {
   return (
     <div className="flex flex-col gap-1.5">
-      <label className="flex items-center gap-2 text-xs font-medium text-stone-700">
-        <input
-          type="checkbox"
-          checked={lesson.studentPaid}
-          onChange={() => onChange({ studentPaid: !lesson.studentPaid })}
-          className="accent-teal-800"
-        />
-        Uczeń zapłacił
-      </label>
+      {lesson.kind !== "probna" && (
+        <label className="flex items-center gap-2 text-xs font-medium text-stone-700">
+          <input
+            type="checkbox"
+            checked={lesson.studentPaid}
+            onChange={() => onChange({ studentPaid: !lesson.studentPaid })}
+            className="accent-teal-800"
+          />
+          Uczeń zapłacił
+        </label>
+      )}
       <label className="flex items-center gap-2 text-xs font-medium text-stone-700">
         <input
           type="checkbox"
@@ -161,6 +276,32 @@ function kindCountLabel(count, one, few, many) {
   const mod100 = amount % 100
   if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return `${amount} ${few}`
   return `${amount} ${many}`
+}
+
+function EntrySwitch({ mode, onLesson, onOwn, onFree }) {
+  const options = [
+    { id: "lesson", label: "Lekcja", onClick: onLesson, activeClass: "bg-stone-900 text-white" },
+    { id: "own", label: "Własne", onClick: onOwn, activeClass: "bg-indigo-800 text-white" },
+    { id: "free", label: "Wolne godziny", onClick: onFree, activeClass: "bg-sky-800 text-white" },
+  ]
+  return (
+    <div className="flex flex-wrap justify-end gap-2">
+      {options.map((option) => (
+        <button
+          key={option.id}
+          type="button"
+          aria-pressed={mode === option.id}
+          onClick={option.onClick}
+          className={cx(
+            "rounded-full px-3 py-1.5 text-sm font-medium transition",
+            mode === option.id ? option.activeClass : "bg-stone-100 text-stone-700 hover:bg-stone-200",
+          )}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  )
 }
 
 function ChoiceGroup({ label, value, options, onChange }) {
@@ -190,8 +331,49 @@ function ChoiceGroup({ label, value, options, onChange }) {
   )
 }
 
+function ParentField({ value, onSave }) {
+  const [text, setText] = useState(value ?? "")
+  const [note, setNote] = useState("")
+
+  useEffect(() => {
+    setText(value ?? "")
+  }, [value])
+
+  async function commit(event) {
+    const next = event.target.value.trim()
+    if (next === (value ?? "").trim()) return
+    setNote("Zapisywanie…")
+    try {
+      await onSave(next)
+      setNote("Zapisano")
+    } catch (error) {
+      setNote(error.message)
+    }
+  }
+
+  return (
+    <label className="mt-3 block">
+      <span className="mb-1 block text-xs font-medium text-stone-500">Dane rodzica</span>
+      <textarea
+        value={text}
+        rows={3}
+        maxLength={2000}
+        placeholder="Imię, telefon i inne informacje"
+        onChange={(event) => {
+          setText(event.target.value)
+          setNote("")
+        }}
+        onBlur={commit}
+        className="w-full resize-y rounded-xl border border-stone-300 bg-white px-2.5 py-2 text-sm text-stone-900 outline-none transition focus:border-teal-700"
+      />
+      {note && <span className="mt-1 block text-xs text-stone-500">{note}</span>}
+    </label>
+  )
+}
+
 export default function CalendarBoard({
   person,
+  people,
   year,
   month,
   onYearMonth,
@@ -204,7 +386,16 @@ export default function CalendarBoard({
   onCreate,
   onUpdate,
   onDelete,
+  personalEvents = [],
+  onCreatePersonal,
+  onUpdatePersonal,
+  onDeletePersonal,
+  parents = {},
+  onSaveParent,
+  onUpdateFree,
+  onCreateFree,
 }) {
+  const now = useMinuteClock()
   const [selected, setSelected] = useState(null)
   const [form, setForm] = useState(EMPTY_FORM)
   const [formError, setFormError] = useState({})
@@ -213,7 +404,20 @@ export default function CalendarBoard({
   const [saving, setSaving] = useState(false)
   const [payError, setPayError] = useState("")
   const [studentScope, setStudentScope] = useState("wszystko")
+  const [intent, setIntent] = useState(null)
+  const [own, setOwn] = useState({ title: "", startsAt: "16:00", endsAt: "17:00" })
+  const [ownId, setOwnId] = useState(null)
+  const [ownError, setOwnError] = useState("")
+  const [ownConfirm, setOwnConfirm] = useState(null)
+  const [breakBusy, setBreakBusy] = useState("")
+  const [freeDraft, setFreeDraft] = useState(null)
+  const [freeForm, setFreeForm] = useState({ startsAt: "15:00", endsAt: "18:00" })
+  const [freeError, setFreeError] = useState("")
+  const [freeBusy, setFreeBusy] = useState(false)
 
+  const names = people?.length ? people : [person]
+  const nameSet = new Set(names)
+  const several = names.length > 1
   const monthLessons = lessons
     .filter((lesson) => dateInMonth(lesson.date, year, month))
     .sort(
@@ -231,7 +435,7 @@ export default function CalendarBoard({
 
   const slotsByDate = new Map()
   for (const slot of freeHours) {
-    if (slot.tutor !== person || !dateInMonth(slot.date, year, month)) continue
+    if (!nameSet.has(slot.tutor) || !dateInMonth(slot.date, year, month)) continue
     const bucket = slotsByDate.get(slot.date)
     if (bucket) bucket.push(slot)
     else slotsByDate.set(slot.date, [slot])
@@ -240,6 +444,58 @@ export default function CalendarBoard({
     bucket.sort((a, b) => a.startsAt.localeCompare(b.startsAt))
   }
 
+  const personalByDate = new Map()
+  for (const event of personalEvents) {
+    if (!nameSet.has(event.tutor) || !dateInMonth(event.date, year, month)) continue
+    const bucket = personalByDate.get(event.date)
+    if (bucket) bucket.push(event)
+    else personalByDate.set(event.date, [event])
+  }
+
+  const breaksByDate = new Map()
+  const pauses = freeBreaks(
+    [
+      ...lessons
+        .filter((lesson) => nameSet.has(lesson.tutor))
+        .map((lesson) => ({
+          id: lesson.id,
+          tutor: lesson.tutor,
+          date: lesson.date,
+          startsAt: lesson.startsAt ? String(lesson.startsAt).slice(0, 5) : "",
+          endsAt: lessonEndsAt(lesson),
+          followerKind: "lesson",
+        })),
+      ...personalEvents
+        .filter((event) => nameSet.has(event.tutor))
+        .map((event) => ({
+          id: event.id,
+          tutor: event.tutor,
+          date: event.date,
+          startsAt: event.startsAt,
+          endsAt: event.endsAt,
+          followerKind: "own",
+        })),
+    ],
+    freeHours,
+  )
+  for (const pause of pauses) {
+    if (!dateInMonth(pause.date, year, month)) continue
+    const bucket = breaksByDate.get(pause.date)
+    if (bucket) bucket.push(pause)
+    else breaksByDate.set(pause.date, [pause])
+  }
+
+  const qualifiedStudents = new Set()
+  const history = new Map()
+  for (const lesson of lessons) {
+    const key = studentKey(lesson)
+    const group = history.get(key)
+    if (group) group.push(lesson)
+    else history.set(key, [lesson])
+  }
+  for (const [key, group] of history) {
+    if (countsAsStudent(group)) qualifiedStudents.add(key)
+  }
   const scopedLessons = lessons.filter((lesson) => {
     if (studentScope === "miesiac") return dateInMonth(lesson.date, year, month)
     if (studentScope === "rok") return lesson.date.startsWith(`${year}-`)
@@ -252,6 +508,7 @@ export default function CalendarBoard({
     else groups.set(key, [lesson])
     return groups
   }, new Map()).values()]
+    .filter((group) => qualifiedStudents.has(studentKey(group[0])))
     .map((group) => {
       const latest = [...group].sort(
         (a, b) => b.date.localeCompare(a.date) || (b.createdAt ?? 0) - (a.createdAt ?? 0),
@@ -261,6 +518,7 @@ export default function CalendarBoard({
         name: latest.studentName,
         discord: latest.discord,
         levels: [...new Set(group.map((lesson) => lesson.level))],
+        tutors: [...new Set(group.map((lesson) => lesson.tutor))].sort((a, b) => a.localeCompare(b, "pl")),
         regular: group.filter((lesson) => lesson.kind === "zwykla").length,
         trial: group.filter((lesson) => lesson.kind === "probna").length,
         minutes: group.reduce((sum, lesson) => sum + Number(lesson.duration || 0), 0),
@@ -271,13 +529,22 @@ export default function CalendarBoard({
   const today = todayKey()
   const dayLessons = selected ? (byDate.get(selected) ?? []) : []
   const daySlots = selected ? (slotsByDate.get(selected) ?? []) : []
+  const dayOwn = selected ? (personalByDate.get(selected) ?? []) : []
+  const dayBreaks = selected ? (breaksByDate.get(selected) ?? []) : []
   const dayEntries = [
+    ...dayBreaks.map((pause) => ({ kind: "pause", id: pause.id, start: pause.startsAt, pause })),
     ...daySlots.map((slot) => ({ kind: "slot", id: slot.id, start: slot.startsAt, slot })),
     ...dayLessons.map((lesson) => ({
       kind: "lesson",
       id: lesson.id,
       start: lesson.startsAt || "99:99",
       lesson,
+    })),
+    ...dayOwn.map((event) => ({
+      kind: "own",
+      id: event.id,
+      start: event.startsAt || "99:99",
+      event,
     })),
   ].sort((a, b) => a.start.localeCompare(b.start))
 
@@ -288,6 +555,28 @@ export default function CalendarBoard({
       await onLessonHeld(lesson.id, held)
     } catch (error) {
       setPayError(error.message)
+    }
+  }
+
+  async function setBreak(pause, minutes) {
+    setPayError("")
+    setBreakBusy(pause.id)
+    try {
+      if (pause.followerKind === "own") {
+        const event = personalEvents.find((item) => item.id === pause.followerId)
+        if (!event || !onUpdatePersonal) return
+        const shifted = shiftForBreak(event, pause, minutes)
+        await onUpdatePersonal(event.id, { ...event, ...shifted })
+      } else {
+        const lesson = lessons.find((item) => item.id === pause.followerId)
+        if (!lesson || !onUpdate) return
+        const shifted = shiftForBreak({ ...lesson, endsAt: lessonEndsAt(lesson) }, pause, minutes)
+        await onUpdate(lesson.id, { ...lesson, startsAt: shifted.startsAt })
+      }
+    } catch (error) {
+      setPayError(error.message)
+    } finally {
+      setBreakBusy("")
     }
   }
 
@@ -306,6 +595,68 @@ export default function CalendarBoard({
     setFormError({})
     setPayError("")
     setConfirmId(null)
+    setIntent(null)
+    setOwn({ title: "", startsAt: "16:00", endsAt: "17:00" })
+    setOwnId(null)
+    setOwnError("")
+    setOwnConfirm(null)
+    setFreeDraft(null)
+    setFreeForm({ startsAt: "15:00", endsAt: "18:00" })
+    setFreeError("")
+  }
+
+  function openFree() {
+    setEditingId(null)
+    setOwnId(null)
+    setOwnError("")
+    setFormError({})
+    setIntent("free")
+    setFreeDraft(null)
+    setFreeError("")
+  }
+
+  function beginFreeEdit(slot) {
+    setEditingId(null)
+    setOwnId(null)
+    setOwnError("")
+    setFormError({})
+    setIntent("free")
+    setFreeDraft({ id: slot.id, date: slot.date })
+    setFreeForm({ startsAt: slot.startsAt, endsAt: slot.endsAt })
+    setFreeError("")
+  }
+
+  function cancelFreeEdit() {
+    setFreeDraft(null)
+    setFreeForm({ startsAt: "15:00", endsAt: "18:00" })
+    setFreeError("")
+  }
+
+  async function saveFree(event) {
+    event.preventDefault()
+    if (!freeForm.startsAt || !freeForm.endsAt || freeForm.endsAt <= freeForm.startsAt) {
+      setFreeError("Godzina końca musi być późniejsza niż początek.")
+      return
+    }
+    setFreeBusy(true)
+    setFreeError("")
+    try {
+      if (freeDraft?.id) {
+        await onUpdateFree(freeDraft.id, {
+          date: freeDraft.date,
+          startsAt: freeForm.startsAt,
+          endsAt: freeForm.endsAt,
+        })
+        cancelFreeEdit()
+      } else if (onCreateFree) {
+        await onCreateFree([{ date: selected, startsAt: freeForm.startsAt, endsAt: freeForm.endsAt }])
+        setFreeForm({ startsAt: "15:00", endsAt: "18:00" })
+      }
+    } catch (error) {
+      setFreeError(error.message)
+    } finally {
+      setFreeBusy(false)
+    }
   }
 
   function shift(delta) {
@@ -327,9 +678,76 @@ export default function CalendarBoard({
     resetForm()
   }
 
+  function openOwn() {
+    setEditingId(null)
+    setFormError({})
+    setOwnError("")
+    setFreeDraft(null)
+    setFreeError("")
+    setIntent("own")
+  }
+
+  function openLesson() {
+    setOwnId(null)
+    setOwnError("")
+    setFreeDraft(null)
+    setFreeError("")
+    setIntent((current) => (current === "trial" || current === "student" ? current : null))
+  }
+
+  function startAdd(kind) {
+    const now = new Date()
+    onYearMonth(now.getFullYear(), now.getMonth())
+    setSelected(today)
+    setEditingId(null)
+    setOwnId(null)
+    setConfirmId(null)
+    setOwnConfirm(null)
+    setFormError({})
+    setOwnError("")
+    setPayError("")
+    setFreeDraft(null)
+    setFreeError("")
+    setForm({ ...EMPTY_FORM, kind })
+    setIntent(kind === "probna" ? "trial" : "student")
+    requestAnimationFrame(() => {
+      document.getElementById("day-panel")?.scrollIntoView({ behavior: "smooth", block: "nearest" })
+    })
+  }
+
+  function startOwn() {
+    const now = new Date()
+    onYearMonth(now.getFullYear(), now.getMonth())
+    setSelected(today)
+    resetForm()
+    setIntent("own")
+    requestAnimationFrame(() => {
+      document.getElementById("day-panel")?.scrollIntoView({ behavior: "smooth", block: "nearest" })
+    })
+  }
+
+  function editOwn(event) {
+    setSelected(event.date)
+    setEditingId(null)
+    setOwnId(event.id)
+    setOwn({ title: event.title, startsAt: event.startsAt, endsAt: event.endsAt })
+    setOwnError("")
+    setOwnConfirm(null)
+    setFreeDraft(null)
+    setFreeError("")
+    setIntent("own")
+    requestAnimationFrame(() => {
+      document.getElementById("day-panel")?.scrollIntoView({ behavior: "smooth", block: "nearest" })
+    })
+  }
+
   function editLesson(lesson) {
     setSelected(lesson.date)
     setEditingId(lesson.id)
+    setOwnId(null)
+    setFreeDraft(null)
+    setFreeError("")
+    setIntent(null)
     setForm({
       studentName: lesson.studentName,
       discord: lesson.discord,
@@ -354,6 +772,47 @@ export default function CalendarBoard({
     } catch (error) {
       setFormError({ form: error.message || "Nie udało się usunąć lekcji." })
       setConfirmId(null)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function removeOwn(id) {
+    setSaving(true)
+    setOwnError("")
+    try {
+      await onDeletePersonal(id)
+      if (ownId === id) resetForm()
+      setOwnConfirm(null)
+    } catch (error) {
+      setOwnError(error.message || "Nie udało się usunąć własnych zajęć.")
+      setOwnConfirm(null)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function submitOwn(event) {
+    event.preventDefault()
+    if (saving || !selected) return
+    const title = own.title.trim()
+    if (!title) {
+      setOwnError("Podaj nazwę, na przykład lekarz albo trening.")
+      return
+    }
+    if (!own.startsAt || !own.endsAt || own.endsAt <= own.startsAt) {
+      setOwnError("Godzina końca musi być późniejsza niż początek.")
+      return
+    }
+    setSaving(true)
+    setOwnError("")
+    const payload = { date: selected, title, startsAt: own.startsAt, endsAt: own.endsAt }
+    try {
+      if (ownId) await onUpdatePersonal(ownId, payload)
+      else await onCreatePersonal(payload)
+      resetForm()
+    } catch (error) {
+      setOwnError(error.message || "Nie udało się zapisać własnych zajęć.")
     } finally {
       setSaving(false)
     }
@@ -400,14 +859,47 @@ export default function CalendarBoard({
     }
   }
 
+  const entryMode = intent === "own" ? "own" : intent === "free" ? "free" : "lesson"
+  const showComposer = canEdit || Boolean(freeDraft?.id)
+  const splitDay = showComposer && dayEntries.length > 0
+  const composerClass = cx(
+    "grid content-start gap-4 sm:grid-cols-2",
+    splitDay && "border-stone-200 lg:border-l lg:pl-8",
+  )
+
   return (
     <div className="space-y-4">
+      {canEdit && (
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={() => startAdd("zwykla")}
+            className="w-full rounded-xl bg-teal-800 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-teal-900"
+          >
+            Dodaj ucznia
+          </button>
+          <button
+            type="button"
+            onClick={() => startAdd("probna")}
+            className="w-full rounded-xl border border-amber-300 bg-amber-50 px-4 py-2.5 text-sm font-semibold text-amber-950 transition hover:bg-amber-100"
+          >
+            Dodaj lekcję próbną
+          </button>
+          <button
+            type="button"
+            onClick={startOwn}
+            className="col-span-2 w-full rounded-xl border border-indigo-300 bg-indigo-50 px-4 py-2.5 text-sm font-semibold text-indigo-950 transition hover:bg-indigo-100"
+          >
+            Dodaj własne
+          </button>
+        </div>
+      )}
       <section id="calendar-board" className="rounded-3xl border border-stone-200 bg-white p-3 shadow-sm sm:p-5">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="text-xl font-semibold text-stone-900">{monthTitle(year, month)}</h2>
             <p className="text-sm text-stone-500">
-              {person} · {monthLessons.length} {lessonsLabel(monthLessons.length)}
+              {names.join(", ")} · {monthLessons.length} {lessonsLabel(monthLessons.length)}
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -454,6 +946,7 @@ export default function CalendarBoard({
             const key = dateKey(year, month, day)
             const items = byDate.get(key) ?? []
             const slots = slotsByDate.get(key) ?? []
+            const ownItems = personalByDate.get(key) ?? []
             const isSelected = selected === key
             const isToday = key === today
             const weekend = index % 7 >= 5
@@ -489,6 +982,11 @@ export default function CalendarBoard({
                         start: lesson.startsAt || "99:99",
                         lesson,
                       })),
+                      ...ownItems.map((event) => ({
+                        id: event.id,
+                        start: event.startsAt || "99:99",
+                        event,
+                      })),
                       ...slots.map((slot) => ({
                         id: slot.id,
                         start: slot.startsAt,
@@ -499,20 +997,34 @@ export default function CalendarBoard({
                     return (
                       <>
                         {visible.map((chip) =>
-                          chip.lesson ? (
+                          chip.event ? (
+                            <div
+                              key={chip.id}
+                              title={chip.event.title}
+                              className="flex h-5 items-center overflow-hidden rounded-md bg-indigo-100 px-1.5 text-[11px] font-medium leading-none text-ellipsis whitespace-nowrap text-indigo-950"
+                            >
+                              {chip.event.startsAt}–{chip.event.endsAt} {chip.event.title}
+                            </div>
+                          ) : chip.lesson ? (
                             <motion.div
                               key={chip.id}
-                              title={`${lessonSpan(chip.lesson) || chip.lesson.studentName} · ${chip.lesson.studentName}`}
+                              title={`${lessonSpan(chip.lesson) || chip.lesson.studentName} · ${chip.lesson.studentName}${several ? ` · ${chip.lesson.tutor}` : ""}`}
                               className={cx(
-                                "flex h-5 items-center overflow-hidden rounded-md px-1.5 text-[11px] font-medium leading-none text-ellipsis whitespace-nowrap",
+                                "flex h-5 items-center gap-1 overflow-hidden rounded-md px-1.5 text-[11px] font-medium leading-none",
                                 awaitsHeldMark(chip.lesson, today) && "animate-pulse",
-                                chip.lesson.kind === "probna"
-                                  ? "bg-amber-100 text-amber-950"
-                                  : "bg-teal-100 text-teal-950",
+                                lessonChip(chip.lesson),
                               )}
                             >
-                              {lessonSpan(chip.lesson) ? `${lessonSpan(chip.lesson)} ` : ""}
-                              {chip.lesson.studentName}
+                              <span className="min-w-0 flex-1 truncate">
+                                {lessonSpan(chip.lesson) ? `${lessonSpan(chip.lesson)} ` : ""}
+                                {chip.lesson.studentName}
+                                {several ? ` · ${chip.lesson.tutor}` : ""}
+                              </span>
+                              {payMarks(chip.lesson).map((mark) => (
+                                <span key={mark.key} className={cx("shrink-0 text-[12px] font-bold leading-none", mark.className)}>
+                                  x
+                                </span>
+                              ))}
                             </motion.div>
                           ) : (
                             <div
@@ -520,6 +1032,7 @@ export default function CalendarBoard({
                               className="flex h-5 items-center overflow-hidden rounded-md bg-sky-100 px-1.5 text-[11px] font-medium leading-none text-ellipsis whitespace-nowrap text-sky-950"
                             >
                               {chip.slot.startsAt}–{chip.slot.endsAt}
+                              {several ? ` ${chip.slot.tutor}` : ""}
                             </div>
                           ),
                         )}
@@ -540,20 +1053,21 @@ export default function CalendarBoard({
                 <div className="mt-auto flex flex-wrap gap-1 pt-1 sm:hidden">
                   {items.length > 0 && items.length <= 4 ? (
                     items.map((lesson) => (
-                      <span
-                        key={lesson.id}
-                        className={cx(
-                          "h-1.5 w-1.5 rounded-full",
-                          awaitsHeldMark(lesson, today) && "animate-pulse",
-                          lesson.kind === "probna" ? "bg-amber-500" : "bg-teal-700",
-                        )}
-                      />
+                      <span key={lesson.id} className={cx("inline-flex items-center gap-px", awaitsHeldMark(lesson, today) && "animate-pulse")}>
+                        <span className={cx("h-1.5 w-1.5 rounded-full", lesson.kind === "probna" ? "bg-amber-500" : "bg-teal-700")} />
+                        {payMarks(lesson).map((mark) => (
+                          <span key={mark.key} className={cx("text-[9px] font-bold leading-none", mark.className)}>
+                            x
+                          </span>
+                        ))}
+                      </span>
                     ))
                   ) : items.length > 4 ? (
                     <span className={cx("text-[10px] font-semibold text-teal-800", items.some((lesson) => awaitsHeldMark(lesson, today)) && "animate-pulse")}>
                       {items.length}
                     </span>
                   ) : null}
+                  {ownItems.length > 0 && <span className="h-1.5 w-1.5 rounded-full bg-indigo-500" />}
                   {slots.length > 0 && (
                     <span className="h-1.5 w-1.5 rounded-sm bg-sky-500" />
                   )}
@@ -563,7 +1077,7 @@ export default function CalendarBoard({
           })}
                 </div>
 
-        <div className="mt-3 flex gap-4 text-xs text-stone-500">
+        <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-xs text-stone-500">
           <span className="inline-flex items-center gap-1.5">
             <span className="h-2 w-2 rounded-full bg-teal-700" />
             Zwykła
@@ -573,8 +1087,20 @@ export default function CalendarBoard({
             Próbna
           </span>
           <span className="inline-flex items-center gap-1.5">
+            <span className="h-2 w-2 rounded-full bg-indigo-500" />
+            Własne
+          </span>
+          <span className="inline-flex items-center gap-1.5">
             <span className="h-2 w-2 rounded-sm bg-sky-500" />
             Wolne
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="text-xs font-bold leading-none text-[#8B5A2B]">x</span>
+            Uczeń nie zapłacił
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="text-xs font-bold leading-none text-red-600">x</span>
+            Korepetytor nieopłacony
           </span>
         </div>
       </section>
@@ -590,25 +1116,145 @@ export default function CalendarBoard({
             transition={{ duration: 0.2 }}
             className="rounded-3xl border border-stone-200 bg-white p-4 shadow-sm sm:p-5"
           >
-            <h3 className="text-lg font-semibold text-stone-900">{formatDay(selected)}</h3>
-                            {formError.form && <p className="mt-2 text-sm text-red-700">{formError.form}</p>}
+            <div className="flex items-start justify-between gap-4">
+              <h3 className="text-lg font-semibold text-stone-900">{formatDay(selected)}</h3>
+              <p className="text-right text-sm font-medium text-stone-800">
+                <time dateTime={now.toISOString()}>{formatNow(now)}</time>
+                <span className="mt-0.5 block text-xs font-normal text-stone-500">teraźniejsza data</span>
+              </p>
+            </div>
+            {formError.form && <p className="mt-2 text-sm text-red-700">{formError.form}</p>}
             {payError && <p className="mt-2 text-sm text-red-700">{payError}</p>}
-            <div className={cx("mt-4 grid gap-6", canEdit && "lg:grid-cols-2")}>
+            <div className="mt-4">
+              {canEdit && !editingId && !ownId && (
+                <div className="mb-4">
+                  <EntrySwitch mode={entryMode} onLesson={openLesson} onOwn={openOwn} onFree={openFree} />
+                </div>
+              )}
+              <div className={cx("grid items-start gap-6", splitDay && "lg:grid-cols-2 lg:gap-8")}>
+              {(dayEntries.length > 0 || !showComposer) && (
               <div className="flex flex-col gap-3">
                 {dayEntries.length === 0 && (
-                  <p className="flex flex-1 items-center justify-center rounded-2xl border border-dashed border-stone-300 px-4 py-6 text-center text-sm text-stone-500">
-                    Brak lekcji w tym dniu.
+                  <p className="rounded-2xl border border-dashed border-stone-300 px-4 py-3 text-center text-sm text-stone-500">
+                    Brak zajęć w tym dniu.
                   </p>
                 )}
                 <AnimatePresence initial={false}>
                   {dayEntries.map((entry) =>
-                    entry.kind === "slot" ? (
-                      <div
+                    entry.kind === "pause" ? (
+                      <motion.div
                         key={entry.id}
-                        className="flex h-11 items-center rounded-2xl border border-sky-200 bg-sky-50 px-3 text-sm font-medium leading-none text-sky-950"
+                        layout
+                        initial={{ opacity: 0, y: 6 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0 }}
+                        transition={{ duration: 0.2 }}
+                        className="flex h-11 items-center justify-between gap-3 rounded-2xl border border-stone-300 bg-stone-200 px-3 text-sm font-medium text-stone-700"
                       >
-                        {entry.slot.startsAt}–{entry.slot.endsAt}
-                      </div>
+                        <span className="truncate">
+                          {entry.pause.minutes === 0
+                            ? `0 minut${several ? ` · ${entry.pause.tutor}` : ""}`
+                            : `${entry.pause.startsAt}–${entry.pause.endsAt}${several ? ` · ${entry.pause.tutor}` : ""} · Przerwa`}
+                        </span>
+                        {((entry.pause.followerKind === "own" && onUpdatePersonal) ||
+                          (entry.pause.followerKind === "lesson" && onUpdate)) && (
+                          <BreakLength
+                            minutes={entry.pause.minutes}
+                            max={entry.pause.max}
+                            busy={breakBusy === entry.id}
+                            onChange={(minutes) => setBreak(entry.pause, minutes)}
+                          />
+                        )}
+                      </motion.div>
+                    ) : entry.kind === "slot" ? (
+                      <motion.div
+                        key={entry.id}
+                        layout
+                        initial={{ opacity: 0, y: 6 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0 }}
+                        transition={{ duration: 0.2 }}
+                        className={cx(
+                          "flex h-11 items-center justify-between gap-3 rounded-2xl border px-3 text-sm font-medium text-sky-950",
+                          freeDraft?.id === entry.slot.id ? "border-sky-700 bg-sky-100" : "border-sky-200 bg-sky-50",
+                        )}
+                      >
+                        <span className="truncate leading-none">
+                          {entry.slot.startsAt}–{entry.slot.endsAt}
+                          {several ? ` · ${entry.slot.tutor}` : ""}
+                        </span>
+                        {onUpdateFree && (
+                          <button
+                            type="button"
+                            onClick={() => beginFreeEdit(entry.slot)}
+                            className="shrink-0 text-sm font-medium text-sky-800"
+                          >
+                            Edytuj
+                          </button>
+                        )}
+                      </motion.div>
+                    ) : entry.kind === "own" ? (
+                      <motion.article
+                        key={entry.id}
+                        layout
+                        initial={{ opacity: 0, y: 6 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0 }}
+                        transition={{ duration: 0.2 }}
+                        className={cx(
+                          "rounded-2xl border px-3 py-3",
+                          ownId === entry.event.id ? "border-indigo-700 bg-indigo-50" : "border-indigo-200 bg-indigo-50/60",
+                        )}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="truncate font-semibold text-stone-900">{entry.event.title}</p>
+                            <p className="mt-1 flex flex-wrap items-center gap-2 text-sm text-stone-500">
+                              <span>
+                                {entry.event.startsAt}–{entry.event.endsAt}
+                              </span>
+                              <Badge tone="violet">Własne</Badge>
+                            </p>
+                          </div>
+                          {canEdit && (
+                            <div className="flex shrink-0 items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => editOwn(entry.event)}
+                                className="text-sm font-medium text-indigo-800"
+                              >
+                                Edytuj
+                              </button>
+                              {ownConfirm === entry.event.id ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={() => removeOwn(entry.event.id)}
+                                    className="text-sm font-medium text-red-700"
+                                  >
+                                    Usuń
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setOwnConfirm(null)}
+                                    className="text-sm text-stone-500"
+                                  >
+                                    Anuluj
+                                  </button>
+                                </>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => setOwnConfirm(entry.event.id)}
+                                  className="text-sm font-medium text-stone-500 hover:text-red-700"
+                                >
+                                  Usuń
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </motion.article>
                     ) : (
                       (() => {
                         const lesson = entry.lesson
@@ -628,6 +1274,7 @@ export default function CalendarBoard({
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
                           <p className="font-semibold text-stone-900">{lesson.studentName}</p>
+                          {several && <p className="text-xs font-medium text-teal-800">{lesson.tutor}</p>}
                           <p className="truncate text-sm text-stone-500">Discord: {lesson.discord}</p>
                         </div>
                         {canEdit && (
@@ -696,11 +1343,120 @@ export default function CalendarBoard({
                   )}
                 </AnimatePresence>
               </div>
+              )}
+              {dayEntries.length === 0 && showComposer && (
+                <p className="rounded-2xl border border-dashed border-stone-300 px-4 py-3 text-center text-sm text-stone-500">
+                  Brak zajęć w tym dniu.
+                </p>
+              )}
 
-              {canEdit ? (
-                <form onSubmit={submit} className="grid gap-4 sm:grid-cols-2">
+              {showComposer && entryMode === "own" ? (
+                <form onSubmit={submitOwn} className={composerClass}>
                   <p className="text-sm font-semibold text-stone-800 sm:col-span-2">
-                    {editingId ? "Edycja lekcji" : "Nowa lekcja"}
+                    {ownId ? "Edycja własnych zajęć" : "Własne zajęcia"}
+                  </p>
+                  <p className="text-sm text-stone-500 sm:col-span-2">Widoczne tylko u Ciebie.</p>
+                  {ownError && <p className="text-sm text-red-700 sm:col-span-2">{ownError}</p>}
+                  <label className="block sm:col-span-2">
+                    <span className="mb-1.5 block text-sm font-medium text-stone-700">Nazwa</span>
+                    <input
+                      value={own.title}
+                      onChange={(event) => setOwn((current) => ({ ...current, title: event.target.value }))}
+                      placeholder="np. Lekarz, trening"
+                      maxLength={80}
+                      autoComplete="off"
+                      className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2.5 text-sm outline-none ring-indigo-700 focus:ring-2"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="mb-1.5 block text-sm font-medium text-stone-700">Od</span>
+                    <input
+                      type="time"
+                      value={own.startsAt}
+                      onChange={(event) => setOwn((current) => ({ ...current, startsAt: event.target.value }))}
+                      className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2.5 text-sm outline-none ring-indigo-700 focus:ring-2"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="mb-1.5 block text-sm font-medium text-stone-700">Do</span>
+                    <input
+                      type="time"
+                      value={own.endsAt}
+                      onChange={(event) => setOwn((current) => ({ ...current, endsAt: event.target.value }))}
+                      className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2.5 text-sm outline-none ring-indigo-700 focus:ring-2"
+                    />
+                  </label>
+                  <div className="flex flex-wrap gap-2 sm:col-span-2">
+                    <button
+                      type="submit"
+                      disabled={saving}
+                      className="rounded-xl bg-indigo-800 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-900 disabled:opacity-60"
+                    >
+                      {saving ? "Zapisywanie…" : ownId ? "Zapisz zmiany" : "Dodaj"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={resetForm}
+                      className="rounded-xl border border-stone-300 bg-white px-4 py-2.5 text-sm font-medium text-stone-800 transition hover:bg-stone-50"
+                    >
+                      Anuluj
+                    </button>
+                  </div>
+                </form>
+              ) : showComposer && entryMode === "free" ? (
+                <form onSubmit={saveFree} className={composerClass}>
+                  <p className="text-sm font-semibold text-stone-800 sm:col-span-2">
+                    {freeDraft?.id ? "Edycja wolnych godzin" : "Wolne godziny"}
+                  </p>
+                  <p className="text-sm text-stone-500 sm:col-span-2">Na wybrany dzień.</p>
+                  {freeError && <p className="text-sm text-red-700 sm:col-span-2">{freeError}</p>}
+                  <label className="block">
+                    <span className="mb-1.5 block text-sm font-medium text-stone-700">Od</span>
+                    <input
+                      type="time"
+                      value={freeForm.startsAt}
+                      onChange={(event) => setFreeForm((current) => ({ ...current, startsAt: event.target.value }))}
+                      className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2.5 text-sm outline-none ring-sky-700 focus:ring-2"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="mb-1.5 block text-sm font-medium text-stone-700">Do</span>
+                    <input
+                      type="time"
+                      value={freeForm.endsAt}
+                      onChange={(event) => setFreeForm((current) => ({ ...current, endsAt: event.target.value }))}
+                      className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2.5 text-sm outline-none ring-sky-700 focus:ring-2"
+                    />
+                  </label>
+                  <div className="flex flex-wrap gap-2 sm:col-span-2">
+                    <button
+                      type="submit"
+                      disabled={freeBusy}
+                      className="rounded-xl bg-sky-800 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-sky-900 disabled:opacity-60"
+                    >
+                      {freeBusy ? "Zapisywanie…" : freeDraft?.id ? "Zapisz" : "Dodaj"}
+                    </button>
+                    {freeDraft?.id && (
+                      <button
+                        type="button"
+                        onClick={cancelFreeEdit}
+                        className="rounded-xl border border-stone-300 bg-white px-4 py-2.5 text-sm font-medium text-stone-800 transition hover:bg-stone-50"
+                      >
+                        Anuluj
+                      </button>
+                    )}
+                  </div>
+                </form>
+              ) : showComposer ? (
+                <form onSubmit={submit} className={composerClass}>
+                  <p className="text-sm font-semibold text-stone-800 sm:col-span-2">
+                    {editingId
+                      ? "Edycja lekcji"
+                      : form.kind === "probna"
+                        ? "Nowa lekcja próbna"
+                        : intent === "student"
+                          ? "Nowy uczeń"
+                          : "Nowa lekcja"}
                   </p>
                   <label className="block">
                     <span className="mb-1.5 block text-sm font-medium text-stone-700">Imię</span>
@@ -738,7 +1494,7 @@ export default function CalendarBoard({
                       <span className="mt-1 block text-xs text-red-700">{formError.discord}</span>
                     )}
                   </label>
-                  <label className="block sm:col-span-2">
+                  <label className="block">
                     <span className="mb-1.5 block text-sm font-medium text-stone-700">Od</span>
                     <input
                       type="time"
@@ -746,7 +1502,7 @@ export default function CalendarBoard({
                       onChange={(event) => setField("startsAt", event.target.value)}
                       aria-invalid={Boolean(formError.startsAt)}
                       className={cx(
-                        "w-full rounded-xl border bg-white px-3 py-2.5 text-sm outline-none ring-teal-800 focus:ring-2 sm:max-w-40",
+                        "w-full rounded-xl border bg-white px-3 py-2.5 text-sm outline-none ring-teal-800 focus:ring-2",
                         formError.startsAt ? "border-red-400" : "border-stone-300",
                       )}
                     />
@@ -754,7 +1510,7 @@ export default function CalendarBoard({
                       <span className="mt-1 block text-xs text-red-700">{formError.startsAt}</span>
                     )}
                   </label>
-                  <div className="sm:col-span-2">
+                  <div>
                     <ChoiceGroup
                       label="Czas"
                       value={form.duration}
@@ -798,6 +1554,7 @@ export default function CalendarBoard({
                   </div>
                 </form>
               ) : null}
+              </div>
             </div>
           </motion.section>
         )}
@@ -855,6 +1612,9 @@ export default function CalendarBoard({
               >
                 <p className="truncate text-sm font-semibold text-stone-900">{student.name}</p>
                 <p className="mt-0.5 truncate text-xs text-stone-500">{student.discord}</p>
+                {several && (
+                  <p className="mt-0.5 truncate text-xs font-medium text-teal-800">{student.tutors.join(", ")}</p>
+                )}
                 <div className="mt-2 flex flex-wrap gap-1">
                   {student.levels.map((level) => (
                     <Badge key={level} tone={LEVEL_TONE[level] ?? "stone"}>
@@ -869,6 +1629,10 @@ export default function CalendarBoard({
                   {kindCountLabel(student.trial, "próbna", "próbne", "próbnych")}
                 </p>
                 <p className="text-xs text-stone-500">{formatMinutes(student.minutes)}</p>
+                <ParentField
+                  value={parents[student.key] ?? ""}
+                  onSave={(info) => onSaveParent(student.key, info)}
+                />
               </div>
             ))}
           </div>

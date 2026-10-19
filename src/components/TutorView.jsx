@@ -1,16 +1,13 @@
 import { useState } from "react"
 import { AvailabilitySwitch, FreeHours } from "./Availability"
 import CalendarBoard from "./CalendarBoard"
-import PushNotice from "./PushNotice"
-import Reservations from "./Reservations"
+import ImportantLinks from "./ImportantLinks"
 import Shell from "./Shell"
 
 export default function TutorView({
   tutor,
   lessons,
   freeHours,
-  bookings,
-  bookingNotice,
   taking,
   notice,
   onLogout,
@@ -22,6 +19,12 @@ export default function TutorView({
   onCreateFree,
   onUpdateFree,
   onDeleteFree,
+  personalEvents,
+  onCreatePersonal,
+  onUpdatePersonal,
+  onDeletePersonal,
+  parents,
+  onSaveParent,
 }) {
   const [year, setYear] = useState(() => new Date().getFullYear())
   const [month, setMonth] = useState(() => new Date().getMonth())
@@ -29,11 +32,10 @@ export default function TutorView({
 
   return (
     <Shell title={tutor} subtitle="Wpisuj zajęcia" notice={notice} onLogout={onLogout}>
-      <PushNotice tutor={tutor} />
       <div className="mb-4">
         <AvailabilitySwitch taking={taking} onChange={onStatus} />
       </div>
-      <Reservations bookings={bookings} tutor={tutor} notice={bookingNotice} />
+      <ImportantLinks />
       <FreeHours
         tutor={tutor}
         hours={freeHours}
@@ -57,6 +59,14 @@ export default function TutorView({
         onUpdate={onUpdate}
         onDelete={onDelete}
         onLessonHeld={onLessonHeld}
+        personalEvents={personalEvents}
+        onCreatePersonal={onCreatePersonal}
+        onUpdatePersonal={onUpdatePersonal}
+        onDeletePersonal={onDeletePersonal}
+        parents={parents}
+        onSaveParent={onSaveParent}
+        onUpdateFree={onUpdateFree}
+        onCreateFree={onCreateFree}
       />
     </Shell>
   )

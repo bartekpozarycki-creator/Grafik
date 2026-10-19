@@ -154,8 +154,7 @@ export default function BookingView({ freeHours, lessons, bookings, statuses, cl
     <div className="mx-auto flex min-h-svh w-full max-w-5xl flex-col px-4 py-6 sm:px-6 sm:py-8">
       <header className="mb-6 flex items-center justify-between gap-4">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-teal-800">Grafik</p>
-          <h1 className="mt-1 text-3xl font-semibold text-stone-900">Korepetycje Mateneza</h1>
+          <h1 className="text-3xl font-semibold text-stone-900">Grafik Zajęć</h1>
           <p className="mt-1 text-sm text-stone-600">Rezerwacja próbnych zajęć</p>
         </div>
         <button

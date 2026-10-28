@@ -26,6 +26,12 @@ export async function fetchParents() {
   return Object.fromEntries((data ?? []).map((row) => [row.student_key, fromRow(row).info]))
 }
 
+export async function deleteParent(studentKey) {
+  if (!supabase) throw new Error("Brak konfiguracji Supabase.")
+  const { error } = await supabase.from("student_parents").delete().eq("student_key", studentKey)
+  if (error) fail(error, "Nie udało się przenieść danych rodzica.")
+}
+
 export async function saveParent(studentKey, info) {
   if (!supabase) throw new Error("Brak konfiguracji Supabase.")
   const text = String(info ?? "").trim()

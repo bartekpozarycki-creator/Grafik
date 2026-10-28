@@ -16,14 +16,16 @@ import {
   fetchFreeHours,
   isExpiredFreeHour,
   fetchStatuses,
+  refitFreeDay,
   saveTutorStatus,
 } from "./lib/availability"
-import { createLesson, deleteLesson, fetchLessons, setLessonHeld, setLessonPaid, updateLesson } from "./lib/lessons"
+import { createLesson, deleteLesson, fetchLessons, renameStudentLessons, setLessonHeld, setLessonPaid, updateLesson } from "./lib/lessons"
 import { createPersonalEvent, deletePersonalEvent, fetchPersonalEvents, personalSpan, updatePersonalEvent } from "./lib/personal"
-import { fetchParents, saveParent } from "./lib/parents"
+import { deleteParent, fetchParents, parentKey, saveParent } from "./lib/parents"
 import { fetchPrices, savePrices } from "./lib/prices"
+import { saveTutorRates } from "./lib/rates"
 import { forgetThisDevice } from "./lib/push"
-import { clearSession, currentPrices, loadSession, rememberPrices, rememberTutors, saveSession } from "./lib/store"
+import { clearSession, currentPrices, keepSession, loadSession, rememberPrices, rememberTutors, saveSession } from "./lib/store"
 
 export default function App() {
   const [session, setSession] = useState(() => {
@@ -156,6 +158,20 @@ export default function App() {
     setPricesNote("")
   }
 
+  async function onSaveRates(next) {
+    await saveTutorRates(next)
+    setSession((current) => {
+      if (!current || current.role !== "admin") return current
+      const tutors = current.tutors.map((tutor) =>
+        next[tutor.name] == null ? tutor : { ...tutor, pay: next[tutor.name] },
+      )
+      const updated = { ...current, tutors }
+      rememberTutors(tutors)
+      keepSession(updated)
+      return updated
+    })
+  }
+
   function logout() {
     forgetThisDevice().catch(() => {})
     rememberTutors([])
@@ -175,6 +191,38 @@ export default function App() {
     const saved = await saveParent(studentKey, info)
     setParents((current) => ({ ...current, [studentKey]: saved }))
     return saved
+  }
+
+  async function onRenameStudent(fromKey, next) {
+    const studentName = next.studentName.trim()
+    const discord = next.discord.trim()
+    const nextKey = parentKey(discord, studentName)
+    const ids = lessons
+      .filter((lesson) => {
+        const key = parentKey(lesson.discord, lesson.studentName)
+        return key === fromKey || key === nextKey
+      })
+      .map((lesson) => lesson.id)
+    const updated = await renameStudentLessons(ids, studentName, discord)
+    const byId = new Map(updated.map((lesson) => [lesson.id, lesson]))
+    revision.current += 1
+    setLessons((current) => current.map((item) => byId.get(item.id) ?? item))
+    if (nextKey === fromKey) return
+    const kept = String(parents[nextKey] ?? "").trim()
+    const extra = String(parents[fromKey] ?? "").trim()
+    const merged = !extra || extra === kept ? kept : kept ? `${kept}\n${extra}` : extra
+    if (merged !== kept) {
+      const saved = await saveParent(nextKey, merged)
+      setParents((current) => ({ ...current, [nextKey]: saved }))
+    }
+    if (extra) {
+      await deleteParent(fromKey)
+      setParents((current) => {
+        const copy = { ...current }
+        delete copy[fromKey]
+        return copy
+      })
+    }
   }
 
   async function punchFreeTime(tutor, lesson) {
@@ -206,10 +254,47 @@ export default function App() {
     }
   }
 
+  async function syncFreeDay(tutor, date, lessonList, eventList) {
+    if (!date) return
+    const blocks = [
+      ...lessonList
+        .filter((lesson) => lesson.tutor === tutor && lesson.date === date && lesson.startsAt)
+        .map((lesson) => ({
+          tutor,
+          date,
+          startsAt: lesson.startsAt,
+          duration: Number(lesson.duration),
+        })),
+      ...eventList
+        .filter((event) => event.tutor === tutor && event.date === date)
+        .map((event) => ({
+          tutor,
+          date,
+          startsAt: event.startsAt,
+          duration: personalSpan(event),
+        })),
+    ]
+    const slots = await refitFreeDay(tutor, date, blocks)
+    if (!slots) return
+    revision.current += 1
+    setFreeHours((current) => [
+      ...current.filter((slot) => slot.tutor !== tutor || slot.date !== date),
+      ...slots,
+    ])
+  }
+
   async function onUpdate(tutor, id, data) {
+    const previous = lessons.find((item) => item.id === id)
     const lesson = await updateLesson(id, tutor, data)
     revision.current += 1
-    setLessons((current) => current.map((item) => (item.id === id ? lesson : item)))
+    const nextLessons = lessons.map((item) => (item.id === id ? lesson : item))
+    setLessons(nextLessons)
+    try {
+      const dates = [...new Set([previous?.date, lesson.date].filter(Boolean))]
+      for (const date of dates) await syncFreeDay(tutor, date, nextLessons, personalEvents)
+    } catch (error) {
+      setLoadError(error.message)
+    }
   }
 
   async function onDelete(tutor, id) {
@@ -230,11 +315,14 @@ export default function App() {
   }
 
   async function onUpdatePersonal(tutor, id, data) {
+    const previous = personalEvents.find((item) => item.id === id)
     const event = await updatePersonalEvent(id, tutor, data)
     revision.current += 1
-    setPersonalEvents((current) => current.map((item) => (item.id === id ? event : item)))
+    const nextEvents = personalEvents.map((item) => (item.id === id ? event : item))
+    setPersonalEvents(nextEvents)
     try {
-      await punchFreeTime(tutor, { date: event.date, startsAt: event.startsAt, duration: personalSpan(event) })
+      const dates = [...new Set([previous?.date, event.date].filter(Boolean))]
+      for (const date of dates) await syncFreeDay(tutor, date, lessons, nextEvents)
     } catch (error) {
       setLoadError(error.message)
     }
@@ -366,8 +454,11 @@ export default function App() {
         prices={prices}
         pricesNote={pricesNote}
         onSavePrices={onSavePrices}
+        onSaveRates={onSaveRates}
         parents={parents}
         onSaveParent={onSaveParent}
+        onRenameStudent={onRenameStudent}
+        onUpdateLesson={onUpdate}
       />
     )
   } else if (session) {
@@ -393,6 +484,7 @@ export default function App() {
         onDeletePersonal={(id) => onDeletePersonal(session.name, id)}
         parents={parents}
         onSaveParent={onSaveParent}
+        onRenameStudent={onRenameStudent}
       />
     )
   }

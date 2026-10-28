@@ -101,6 +101,18 @@ export async function createLesson(lesson) {
   return fromRow(data)
 }
 
+export async function renameStudentLessons(ids, studentName, discord) {
+  if (!supabase) throw new Error("Brak konfiguracji Supabase.")
+  if (!ids.length) return []
+  const { data, error } = await supabase
+    .from("lessons")
+    .update({ student_name: studentName, discord })
+    .in("id", ids)
+    .select("*")
+  if (error) fail(error, "Nie udało się zmienić danych ucznia.")
+  return (data ?? []).map(fromRow)
+}
+
 export async function updateLesson(id, tutor, lesson) {
   if (!supabase) throw new Error("Brak konfiguracji Supabase.")
   const row = toRow({ ...lesson, tutor }, false)

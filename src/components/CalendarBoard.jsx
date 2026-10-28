@@ -169,15 +169,28 @@ function BreakLength({ minutes, max, busy, onChange }) {
 }
 
 function lessonChip(lesson) {
+  if (lesson.held === false) return "bg-stone-200 text-stone-500"
   if (lesson.kind === "probna") return "bg-amber-100 text-amber-950"
   return "bg-teal-100 text-teal-950"
 }
 
 function payMarks(lesson) {
+  if (lesson.held === false) return []
   const marks = []
   if (lesson.kind !== "probna" && !lesson.studentPaid) marks.push({ key: "student", className: "text-[#8B5A2B]" })
   if (!lesson.tutorPaid) marks.push({ key: "tutor", className: "text-red-600" })
   return marks
+}
+
+function dayPayCounts(lessons) {
+  const counts = { student: 0, tutor: 0 }
+  for (const lesson of lessons) {
+    for (const mark of payMarks(lesson)) counts[mark.key] += 1
+  }
+  return [
+    counts.student > 0 && { key: "student", count: counts.student, className: "text-[#8B5A2B]" },
+    counts.tutor > 0 && { key: "tutor", count: counts.tutor, className: "text-red-600" },
+  ].filter(Boolean)
 }
 
 function awaitsHeldMark(lesson, today) {
@@ -278,14 +291,23 @@ function kindCountLabel(count, one, few, many) {
   return `${amount} ${many}`
 }
 
-function EntrySwitch({ mode, onLesson, onOwn, onFree }) {
+function ComposerHeading({ title, children }) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5 sm:col-span-2">
+      <p className="text-sm font-semibold text-stone-800">{title}</p>
+      {children && <div className="ml-auto lg:hidden">{children}</div>}
+    </div>
+  )
+}
+
+function EntrySwitch({ mode, onLesson, onOwn, onFree, compact = false }) {
   const options = [
     { id: "lesson", label: "Lekcja", onClick: onLesson, activeClass: "bg-stone-900 text-white" },
     { id: "own", label: "Własne", onClick: onOwn, activeClass: "bg-indigo-800 text-white" },
     { id: "free", label: "Wolne godziny", onClick: onFree, activeClass: "bg-sky-800 text-white" },
   ]
   return (
-    <div className="flex flex-wrap justify-end gap-2">
+    <div className={cx("flex flex-nowrap justify-end", compact ? "gap-1" : "flex-wrap gap-2")}>
       {options.map((option) => (
         <button
           key={option.id}
@@ -293,7 +315,8 @@ function EntrySwitch({ mode, onLesson, onOwn, onFree }) {
           aria-pressed={mode === option.id}
           onClick={option.onClick}
           className={cx(
-            "rounded-full px-3 py-1.5 text-sm font-medium transition",
+            "shrink-0 whitespace-nowrap rounded-full font-medium transition",
+            compact ? "px-1.5 py-1 text-xs! leading-none!" : "px-3 py-1.5 text-sm",
             mode === option.id ? option.activeClass : "bg-stone-100 text-stone-700 hover:bg-stone-200",
           )}
         >
@@ -364,7 +387,7 @@ function ParentField({ value, onSave }) {
           setNote("")
         }}
         onBlur={commit}
-        className="w-full resize-y rounded-xl border border-stone-300 bg-white px-2.5 py-2 text-sm text-stone-900 outline-none transition focus:border-teal-700"
+        className="w-full resize-none rounded-xl border border-stone-300 bg-white px-2.5 py-2 text-sm text-stone-900 outline-none transition focus:border-teal-700"
       />
       {note && <span className="mt-1 block text-xs text-stone-500">{note}</span>}
     </label>
@@ -380,6 +403,7 @@ export default function CalendarBoard({
   lessons,
   freeHours = [],
   canEdit,
+  canEditLessons = false,
   canMarkPayment = false,
   onLessonPaid,
   onLessonHeld,
@@ -392,6 +416,7 @@ export default function CalendarBoard({
   onDeletePersonal,
   parents = {},
   onSaveParent,
+  onRenameStudent,
   onUpdateFree,
   onCreateFree,
 }) {
@@ -414,6 +439,10 @@ export default function CalendarBoard({
   const [freeForm, setFreeForm] = useState({ startsAt: "15:00", endsAt: "18:00" })
   const [freeError, setFreeError] = useState("")
   const [freeBusy, setFreeBusy] = useState(false)
+  const [editingStudent, setEditingStudent] = useState(null)
+  const [studentDraft, setStudentDraft] = useState({ name: "", discord: "" })
+  const [studentError, setStudentError] = useState("")
+  const [studentBusy, setStudentBusy] = useState(false)
 
   const names = people?.length ? people : [person]
   const nameSet = new Set(names)
@@ -603,6 +632,42 @@ export default function CalendarBoard({
     setFreeDraft(null)
     setFreeForm({ startsAt: "15:00", endsAt: "18:00" })
     setFreeError("")
+  }
+
+  function beginStudentEdit(student) {
+    setEditingStudent(student.key)
+    setStudentDraft({ name: student.name, discord: student.discord })
+    setStudentError("")
+  }
+
+  function cancelStudentEdit() {
+    setEditingStudent(null)
+    setStudentError("")
+  }
+
+  async function saveStudent(event) {
+    event.preventDefault()
+    if (!onRenameStudent || !editingStudent) return
+    const studentName = studentDraft.name.trim()
+    const discord = studentDraft.discord.trim()
+    if (!studentName) {
+      setStudentError("Podaj imię.")
+      return
+    }
+    if (!discord) {
+      setStudentError("Podaj nazwę na Discordzie.")
+      return
+    }
+    setStudentBusy(true)
+    setStudentError("")
+    try {
+      await onRenameStudent(editingStudent, { studentName, discord })
+      setEditingStudent(null)
+    } catch (error) {
+      setStudentError(error.message)
+    } finally {
+      setStudentBusy(false)
+    }
   }
 
   function openFree() {
@@ -860,11 +925,11 @@ export default function CalendarBoard({
   }
 
   const entryMode = intent === "own" ? "own" : intent === "free" ? "free" : "lesson"
-  const showComposer = canEdit || Boolean(freeDraft?.id)
+  const showComposer = canEdit || Boolean(freeDraft?.id) || (canEditLessons && Boolean(editingId))
   const splitDay = showComposer && dayEntries.length > 0
   const composerClass = cx(
-    "grid content-start gap-4 sm:grid-cols-2",
-    splitDay && "border-stone-200 lg:border-l lg:pl-8",
+    "grid content-start gap-4 border-t border-stone-200 pt-4 sm:grid-cols-2",
+    splitDay && "lg:border-t-0 lg:pt-0 lg:border-l lg:pl-8",
   )
 
   return (
@@ -950,6 +1015,7 @@ export default function CalendarBoard({
             const isSelected = selected === key
             const isToday = key === today
             const weekend = index % 7 >= 5
+            const payCounts = canMarkPayment ? dayPayCounts(items) : []
             return (
               <button
                 key={key}
@@ -966,13 +1032,20 @@ export default function CalendarBoard({
                       : "border-stone-200 bg-white hover:border-stone-300",
                 )}
               >
-                <span
-                  className={cx(
-                    "inline-flex h-6 w-6 items-center justify-center rounded-full text-xs font-semibold",
-                    isToday ? "bg-teal-800 text-white" : "text-stone-800",
-                  )}
-                >
-                  {day}
+                <span className="inline-flex items-center gap-1">
+                  <span
+                    className={cx(
+                      "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold",
+                      isToday ? "bg-teal-800 text-white" : "text-stone-800",
+                    )}
+                  >
+                    {day}
+                  </span>
+                  {payCounts.map((mark) => (
+                    <span key={mark.key} className={cx("text-[10px] font-bold leading-none whitespace-nowrap sm:text-xs", mark.className)}>
+                      {mark.count > 1 ? `${mark.count}x` : "x"}
+                    </span>
+                  ))}
                 </span>
                 <div className="mt-1 hidden space-y-1 sm:block">
                   {(() => {
@@ -1020,11 +1093,6 @@ export default function CalendarBoard({
                                 {chip.lesson.studentName}
                                 {several ? ` · ${chip.lesson.tutor}` : ""}
                               </span>
-                              {payMarks(chip.lesson).map((mark) => (
-                                <span key={mark.key} className={cx("shrink-0 text-[12px] font-bold leading-none", mark.className)}>
-                                  x
-                                </span>
-                              ))}
                             </motion.div>
                           ) : (
                             <div
@@ -1054,12 +1122,12 @@ export default function CalendarBoard({
                   {items.length > 0 && items.length <= 4 ? (
                     items.map((lesson) => (
                       <span key={lesson.id} className={cx("inline-flex items-center gap-px", awaitsHeldMark(lesson, today) && "animate-pulse")}>
-                        <span className={cx("h-1.5 w-1.5 rounded-full", lesson.kind === "probna" ? "bg-amber-500" : "bg-teal-700")} />
-                        {payMarks(lesson).map((mark) => (
-                          <span key={mark.key} className={cx("text-[9px] font-bold leading-none", mark.className)}>
-                            x
-                          </span>
-                        ))}
+                        <span
+                          className={cx(
+                            "h-1.5 w-1.5 rounded-full",
+                            lesson.held === false ? "bg-stone-400" : lesson.kind === "probna" ? "bg-amber-500" : "bg-teal-700",
+                          )}
+                        />
                       </span>
                     ))
                   ) : items.length > 4 ? (
@@ -1087,6 +1155,10 @@ export default function CalendarBoard({
             Próbna
           </span>
           <span className="inline-flex items-center gap-1.5">
+            <span className="h-2 w-2 rounded-full bg-stone-400" />
+            Nie odbyły się
+          </span>
+          <span className="inline-flex items-center gap-1.5">
             <span className="h-2 w-2 rounded-full bg-indigo-500" />
             Własne
           </span>
@@ -1094,14 +1166,18 @@ export default function CalendarBoard({
             <span className="h-2 w-2 rounded-sm bg-sky-500" />
             Wolne
           </span>
-          <span className="inline-flex items-center gap-1.5">
-            <span className="text-xs font-bold leading-none text-[#8B5A2B]">x</span>
-            Uczeń nie zapłacił
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <span className="text-xs font-bold leading-none text-red-600">x</span>
-            Korepetytor nieopłacony
-          </span>
+          {canMarkPayment && (
+            <>
+              <span className="inline-flex items-center gap-1.5">
+                <span className="text-xs font-bold leading-none text-[#8B5A2B]">x</span>
+                Uczeń nie zapłacił
+              </span>
+              <span className="inline-flex items-center gap-1.5">
+                <span className="text-xs font-bold leading-none text-red-600">x</span>
+                Korepetytor nieopłacony
+              </span>
+            </>
+          )}
         </div>
       </section>
 
@@ -1127,7 +1203,7 @@ export default function CalendarBoard({
             {payError && <p className="mt-2 text-sm text-red-700">{payError}</p>}
             <div className="mt-4">
               {canEdit && !editingId && !ownId && (
-                <div className="mb-4">
+                <div className="mb-4 hidden lg:block">
                   <EntrySwitch mode={entryMode} onLesson={openLesson} onOwn={openOwn} onFree={openFree} />
                 </div>
               )}
@@ -1277,7 +1353,7 @@ export default function CalendarBoard({
                           {several && <p className="text-xs font-medium text-teal-800">{lesson.tutor}</p>}
                           <p className="truncate text-sm text-stone-500">Discord: {lesson.discord}</p>
                         </div>
-                        {canEdit && (
+                        {(canEdit || canEditLessons) && (
                           <div className="flex shrink-0 items-center gap-2">
                             <button
                               type="button"
@@ -1286,32 +1362,33 @@ export default function CalendarBoard({
                             >
                               Edytuj
                             </button>
-                            {confirmId === lesson.id ? (
-                              <>
+                            {canEdit &&
+                              (confirmId === lesson.id ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={() => removeLesson(lesson.id)}
+                                    className="text-sm font-medium text-red-700"
+                                  >
+                                    Usuń
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setConfirmId(null)}
+                                    className="text-sm text-stone-500"
+                                  >
+                                    Anuluj
+                                  </button>
+                                </>
+                              ) : (
                                 <button
                                   type="button"
-                                  onClick={() => removeLesson(lesson.id)}
-                                  className="text-sm font-medium text-red-700"
+                                  onClick={() => setConfirmId(lesson.id)}
+                                  className="text-sm font-medium text-stone-500 hover:text-red-700"
                                 >
                                   Usuń
                                 </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setConfirmId(null)}
-                                  className="text-sm text-stone-500"
-                                >
-                                  Anuluj
-                                </button>
-                              </>
-                            ) : (
-                              <button
-                                type="button"
-                                onClick={() => setConfirmId(lesson.id)}
-                                className="text-sm font-medium text-stone-500 hover:text-red-700"
-                              >
-                                Usuń
-                              </button>
-                            )}
+                              ))}
                           </div>
                         )}
                       </div>
@@ -1324,7 +1401,7 @@ export default function CalendarBoard({
                           {labelOf(LEVELS, lesson.level)}
                         </Badge>
                         {!canEdit && <Badge tone={heldBadge(lesson).tone}>{heldBadge(lesson).text}</Badge>}
-                        {canMarkPayment && (
+                        {canMarkPayment && lesson.held !== false && (
                           <PaymentChecks lesson={lesson} onChange={(patch) => markPaid(lesson, patch)} />
                         )}
                       </div>
@@ -1352,9 +1429,11 @@ export default function CalendarBoard({
 
               {showComposer && entryMode === "own" ? (
                 <form onSubmit={submitOwn} className={composerClass}>
-                  <p className="text-sm font-semibold text-stone-800 sm:col-span-2">
-                    {ownId ? "Edycja własnych zajęć" : "Własne zajęcia"}
-                  </p>
+                  <ComposerHeading title={ownId ? "Edycja własnych zajęć" : "Własne zajęcia"}>
+                    {canEdit && !editingId && !ownId && (
+                      <EntrySwitch compact mode={entryMode} onLesson={openLesson} onOwn={openOwn} onFree={openFree} />
+                    )}
+                  </ComposerHeading>
                   <p className="text-sm text-stone-500 sm:col-span-2">Widoczne tylko u Ciebie.</p>
                   {ownError && <p className="text-sm text-red-700 sm:col-span-2">{ownError}</p>}
                   <label className="block sm:col-span-2">
@@ -1405,9 +1484,11 @@ export default function CalendarBoard({
                 </form>
               ) : showComposer && entryMode === "free" ? (
                 <form onSubmit={saveFree} className={composerClass}>
-                  <p className="text-sm font-semibold text-stone-800 sm:col-span-2">
-                    {freeDraft?.id ? "Edycja wolnych godzin" : "Wolne godziny"}
-                  </p>
+                  <ComposerHeading title={freeDraft?.id ? "Edycja wolnych godzin" : "Wolne godziny"}>
+                    {canEdit && !editingId && !ownId && (
+                      <EntrySwitch compact mode={entryMode} onLesson={openLesson} onOwn={openOwn} onFree={openFree} />
+                    )}
+                  </ComposerHeading>
                   <p className="text-sm text-stone-500 sm:col-span-2">Na wybrany dzień.</p>
                   {freeError && <p className="text-sm text-red-700 sm:col-span-2">{freeError}</p>}
                   <label className="block">
@@ -1449,15 +1530,21 @@ export default function CalendarBoard({
                 </form>
               ) : showComposer ? (
                 <form onSubmit={submit} className={composerClass}>
-                  <p className="text-sm font-semibold text-stone-800 sm:col-span-2">
-                    {editingId
-                      ? "Edycja lekcji"
-                      : form.kind === "probna"
-                        ? "Nowa lekcja próbna"
-                        : intent === "student"
-                          ? "Nowy uczeń"
-                          : "Nowa lekcja"}
-                  </p>
+                  <ComposerHeading
+                    title={
+                      editingId
+                        ? "Edycja lekcji"
+                        : form.kind === "probna"
+                          ? "Nowa lekcja próbna"
+                          : intent === "student"
+                            ? "Nowy uczeń"
+                            : "Nowa lekcja"
+                    }
+                  >
+                    {canEdit && !editingId && !ownId && (
+                      <EntrySwitch compact mode={entryMode} onLesson={openLesson} onOwn={openOwn} onFree={openFree} />
+                    )}
+                  </ComposerHeading>
                   <label className="block">
                     <span className="mb-1.5 block text-sm font-medium text-stone-700">Imię</span>
                     <input
@@ -1605,13 +1692,85 @@ export default function CalendarBoard({
           </p>
         ) : (
           <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
-            {students.map((student) => (
+            {students.map((student) => {
+              const draftKey = studentDraft.discord.trim().toLowerCase() || studentDraft.name.trim().toLowerCase()
+              const mergeLesson =
+                editingStudent === student.key && draftKey && draftKey !== student.key
+                  ? lessons.find((lesson) => studentKey(lesson) === draftKey)
+                  : null
+              return (
               <div
                 key={student.key}
                 className="flex min-h-32 flex-col rounded-2xl border border-stone-200 bg-white p-3"
               >
-                <p className="truncate text-sm font-semibold text-stone-900">{student.name}</p>
-                <p className="mt-0.5 truncate text-xs text-stone-500">{student.discord}</p>
+                {editingStudent === student.key ? (
+                  <motion.form
+                    initial={{ opacity: 0, y: 4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.16 }}
+                    onSubmit={saveStudent}
+                    className="space-y-2"
+                  >
+                    <label className="block">
+                      <span className="mb-1 block text-xs font-medium text-stone-500">Imię</span>
+                      <input
+                        value={studentDraft.name}
+                        onChange={(event) => setStudentDraft((current) => ({ ...current, name: event.target.value }))}
+                        maxLength={80}
+                        autoComplete="off"
+                        className="w-full rounded-xl border border-stone-300 bg-white px-2.5 py-2 text-sm outline-none ring-teal-800 focus:ring-2"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="mb-1 block text-xs font-medium text-stone-500">Nazwa na Discordzie</span>
+                      <input
+                        value={studentDraft.discord}
+                        onChange={(event) => setStudentDraft((current) => ({ ...current, discord: event.target.value }))}
+                        maxLength={80}
+                        autoComplete="off"
+                        className="w-full rounded-xl border border-stone-300 bg-white px-2.5 py-2 text-sm outline-none ring-teal-800 focus:ring-2"
+                      />
+                    </label>
+                    {studentError && <p className="text-xs text-red-700">{studentError}</p>}
+                    {mergeLesson && (
+                      <p className="text-xs text-stone-500">
+                        Połączy się z uczniem {mergeLesson.studentName}. Lekcje będą w jednym profilu.
+                      </p>
+                    )}
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="submit"
+                        disabled={studentBusy}
+                        className="rounded-xl bg-teal-800 px-3 py-1.5 text-sm font-semibold text-white transition hover:bg-teal-900 disabled:opacity-60"
+                      >
+                        {studentBusy ? "Zapisywanie…" : mergeLesson ? "Połącz" : "Zapisz"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={cancelStudentEdit}
+                        className="rounded-xl border border-stone-300 bg-white px-3 py-1.5 text-sm font-medium text-stone-800"
+                      >
+                        Anuluj
+                      </button>
+                    </div>
+                  </motion.form>
+                ) : (
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold text-stone-900">{student.name}</p>
+                      <p className="mt-0.5 truncate text-xs text-stone-500">{student.discord}</p>
+                    </div>
+                    {onRenameStudent && (
+                      <button
+                        type="button"
+                        onClick={() => beginStudentEdit(student)}
+                        className="shrink-0 text-sm font-medium text-teal-800"
+                      >
+                        Edytuj
+                      </button>
+                    )}
+                  </div>
+                )}
                 {several && (
                   <p className="mt-0.5 truncate text-xs font-medium text-teal-800">{student.tutors.join(", ")}</p>
                 )}
@@ -1634,7 +1793,8 @@ export default function CalendarBoard({
                   onSave={(info) => onSaveParent(student.key, info)}
                 />
               </div>
-            ))}
+              )
+            })}
           </div>
         )}
           </motion.div>

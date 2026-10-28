@@ -5,7 +5,8 @@ create table if not exists public.app_logins (
   counts_money boolean not null default true,
   profit integer not null default 0,
   sort integer not null default 0,
-  code text
+  code text,
+  pay jsonb
 );
 
 alter table public.app_logins enable row level security;
@@ -13,6 +14,7 @@ alter table public.app_logins enable row level security;
 revoke all on table public.app_logins from public, anon, authenticated;
 
 alter table public.app_logins add column if not exists code text;
+alter table public.app_logins add column if not exists pay jsonb;
 
 insert into public.app_logins (login, role, display_name, counts_money, profit, sort, code)
 values
@@ -53,7 +55,8 @@ begin
     select coalesce(jsonb_agg(jsonb_build_object(
       'name', display_name,
       'countsMoney', counts_money,
-      'profit', profit
+      'profit', profit,
+      'pay', pay
     ) order by sort), '[]'::jsonb)
     into tutors
     from public.app_logins
@@ -74,7 +77,8 @@ begin
     'role', 'tutor',
     'name', account.display_name,
     'countsMoney', account.counts_money,
-    'profit', account.profit
+    'profit', account.profit,
+    'pay', account.pay
   );
 end;
 $$;

@@ -21,10 +21,12 @@ export async function fetchPrices() {
 
 export async function savePrices(prices) {
   if (!supabase) throw new Error("Brak konfiguracji Supabase.")
-  const rows = Object.keys(DEFAULT_PRICES).map((level) => ({
-    level,
-    price: Number(prices[level]),
-  }))
+  const rows = Object.keys(DEFAULT_PRICES)
+    .filter((level) => Number.isFinite(Number(prices[level])))
+    .map((level) => ({
+      level,
+      price: Number(prices[level]),
+    }))
   const { data, error } = await supabase.from("level_prices").upsert(rows).select("level, price")
   if (error?.code === "PGRST205") {
     throw new Error("Ceny poziomów nie są jeszcze gotowe w Supabase. Uruchom plik supabase/prices.sql.")

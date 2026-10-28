@@ -123,6 +123,14 @@ export async function changeFreeHour(id, tutor, slot, lessons = []) {
   return selectFreeHours((query) => query.eq("tutor", tutor).eq("date", slot.date))
 }
 
+export async function refitFreeDay(tutor, date, blocks) {
+  if (!supabase) throw new Error("Brak konfiguracji Supabase.")
+  const day = await selectFreeHours((query) => query.eq("tutor", tutor).eq("date", date))
+  const changed = await commitFit(day, fitFreeHours(day, blocks))
+  if (!changed) return null
+  return selectFreeHours((query) => query.eq("tutor", tutor).eq("date", date))
+}
+
 function toHour(slot) {
   return {
     tutor: slot.tutor,

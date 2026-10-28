@@ -10,6 +10,21 @@ export const DEFAULT_PRICES = {
 
 export const DURATIONS = [45, 60, 90]
 
+const SHORT_LESSON_MINUTES = 45
+const LONG_LESSON_MINUTES = 90
+
+const SHORT_LESSON_PRICES = {
+  podstawa: 70,
+  podstawowka: 70,
+  rozszerzenie: 80,
+}
+
+const LONG_LESSON_PRICES = {
+  podstawa: 130,
+  podstawowka: 130,
+  rozszerzenie: 140,
+}
+
 export const KINDS = [
   { id: "zwykla", label: "Zwykła" },
   { id: "probna", label: "Próbna" },
@@ -19,14 +34,11 @@ export const LEVELS = [
   { id: "rozszerzenie", label: "Rozszerzenie" },
   { id: "podstawa", label: "Podstawa" },
   { id: "podstawowka", label: "Podstawówka" },
-  { id: "studia", label: "Studia" },
 ]
 
 export const PRICE_LEVELS = [
-  { id: "rozszerzenie", label: "Poziom rozszerzony" },
-  { id: "podstawa", label: "Poziom podstawowy" },
-  { id: "podstawowka", label: "Podstawówka" },
-  { id: "studia", label: "Studia" },
+  { id: "rozszerzenie", label: "Poziom rozszerzony", levels: ["rozszerzenie"] },
+  { id: "podstawa", label: "Podstawa", levels: ["podstawa", "podstawowka"] },
 ]
 
 export const WEEKDAYS = ["Pn", "Wt", "Śr", "Cz", "Pt", "So", "Nd"]
@@ -61,16 +73,36 @@ export function currentPrices() {
   return Object.fromEntries(pricesByLevel)
 }
 
-function priceOf(level) {
-  return pricesByLevel.get(level) ?? 0
-}
-
 function hoursOf(lesson) {
   return Number(lesson.duration || 0) / 60
 }
 
+export function lessonPriceFor(level, duration, prices = currentPrices()) {
+  const minutes = Number(duration)
+  if (minutes === SHORT_LESSON_MINUTES && level in SHORT_LESSON_PRICES) return SHORT_LESSON_PRICES[level]
+  if (minutes === LONG_LESSON_MINUTES && level in LONG_LESSON_PRICES) return LONG_LESSON_PRICES[level]
+  return (Number(prices?.[level]) || 0) * (minutes / 60)
+}
+
+export function paySplit(prices, profit, level, duration) {
+  const price = lessonPriceFor(level, duration, prices)
+  const school = Math.min(price, Math.max(0, (Number(profit) || 0) * (Number(duration) / 60)))
+  const roundedSchool = Math.round(school * 100) / 100
+  return {
+    price,
+    tutor: Math.round((price - roundedSchool) * 100) / 100,
+    school: roundedSchool,
+  }
+}
+
+function lessonPrice(lesson) {
+  return lessonPriceFor(lesson.level, lesson.duration)
+}
+
 function roundMoney(value) {
-  return Math.round((Number(value) || 0) * 100) / 100
+  const amount = Math.round((Number(value) || 0) * 100) / 100
+  if (amount > 0 && Math.round(amount * 100) % 1000 === 500) return amount - 5
+  return amount
 }
 
 export function rememberTutors(tutors) {
@@ -114,6 +146,10 @@ export function saveSession(session, remember) {
   }
   sessionStorage.setItem(SESSION_KEY, raw)
   localStorage.removeItem(SESSION_KEY)
+}
+
+export function keepSession(session) {
+  saveSession(session, localStorage.getItem(SESSION_KEY) != null)
 }
 
 export function clearSession() {
@@ -196,14 +232,29 @@ function countsTowardMoney(lesson) {
   return lesson.kind !== "probna" && countsMoney(lesson.tutor) && lesson.held === true
 }
 
+function configuredTutor(lesson) {
+  const cell = tutorsByName.get(lesson.tutor)?.pay?.[lesson.level]?.[String(lesson.duration)]
+  if (!cell || typeof cell !== "object") return null
+  const tutor = Number(cell.tutor)
+  if (!Number.isFinite(tutor) || tutor < 0) return null
+  return tutor
+}
+
 function tutorShare(lesson) {
-  const hourly = Math.max(0, priceOf(lesson.level) - (tutorsByName.get(lesson.tutor)?.profit ?? 0))
-  return roundMoney(hourly * hoursOf(lesson))
+  const price = lessonPrice(lesson)
+  const set = configuredTutor(lesson)
+  if (set != null) return Math.min(price, set)
+  const cut = (tutorsByName.get(lesson.tutor)?.profit ?? 0) * hoursOf(lesson)
+  return Math.max(0, price - cut)
+}
+
+function schoolShare(lesson) {
+  return Math.max(0, lessonPrice(lesson) - tutorShare(lesson))
 }
 
 export function lessonRevenue(lesson) {
   if (!countsTowardMoney(lesson) || !lesson.studentPaid) return 0
-  return roundMoney(priceOf(lesson.level) * hoursOf(lesson))
+  return roundMoney(lessonPrice(lesson))
 }
 
 export function tutorEarning(lesson) {
@@ -212,13 +263,19 @@ export function tutorEarning(lesson) {
 }
 
 export function lessonProfit(lesson) {
-  const revenue = lessonRevenue(lesson)
-  if (!revenue) return 0
-  return roundMoney(revenue - tutorShare(lesson))
+  if (!countsTowardMoney(lesson) || !lesson.studentPaid) return 0
+  return schoolShare(lesson)
+}
+
+export function trialPayout(lesson, stayed) {
+  if (lesson.kind !== "probna" || lesson.held !== true || !countsMoney(lesson.tutor)) return 0
+  const hourly = tutorShare({ ...lesson, duration: 60 })
+  return Math.round(hourly * (stayed ? 1 : 0.5) * 100) / 100
 }
 
 export function formatMoney(amount) {
-  return `${new Intl.NumberFormat("pl-PL").format(amount)} zł`
+  const value = Math.round((Number(amount) || 0) * 100) / 100
+  return `${new Intl.NumberFormat("pl-PL", { maximumFractionDigits: 2 }).format(value)} zł`
 }
 
 export function monthTitle(year, month) {
@@ -264,5 +321,5 @@ export function lessonsLabel(count) {
 }
 
 export function labelOf(options, id) {
-  return options.find((option) => option.id === id)?.label ?? String(id ?? "")
+  return options.find((option) => option.id === id)?.label ?? (id === "studia" ? "Studia" : String(id ?? ""))
 }

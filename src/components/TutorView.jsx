@@ -25,6 +25,7 @@ export default function TutorView({
   onDeletePersonal,
   parents,
   onSaveParent,
+  onRenameStudent,
 }) {
   const [year, setYear] = useState(() => new Date().getFullYear())
   const [month, setMonth] = useState(() => new Date().getMonth())
@@ -65,6 +66,7 @@ export default function TutorView({
         onDeletePersonal={onDeletePersonal}
         parents={parents}
         onSaveParent={onSaveParent}
+        onRenameStudent={onRenameStudent}
         onUpdateFree={onUpdateFree}
         onCreateFree={onCreateFree}
       />

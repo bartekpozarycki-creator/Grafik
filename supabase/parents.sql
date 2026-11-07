@@ -24,3 +24,4 @@ create policy "student parents all"
   with check (true);
 
 alter table public.student_parents add column if not exists info text not null default '';
+alter table public.student_parents add column if not exists active boolean not null default true;

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { AnimatePresence, motion } from "framer-motion"
 import { freeBreaks, shiftForBreak } from "../lib/availability"
 import {
@@ -7,16 +7,23 @@ import {
   LEVELS,
   WEEKDAYS,
   countsAsStudent,
+  addDays,
   buildMonthCells,
   dateInMonth,
   dateKey,
   formatDay,
   formatMinutes,
+  formatMoney,
+  formatShort,
   labelOf,
   lessonsLabel,
   monthTitle,
   todayKey,
+  dailyDates,
+  weeklyDates,
 } from "../lib/store"
+
+const ENTRY_MODES = ["lesson", "own", "free"]
 
 const EMPTY_FORM = {
   studentName: "",
@@ -25,6 +32,69 @@ const EMPTY_FORM = {
   duration: 60,
   kind: "zwykla",
   level: "podstawa",
+}
+
+function weekdayName(key) {
+  const [year, month, day] = String(key).split("-").map(Number)
+  if (!year || !month || !day) return ""
+  return new Intl.DateTimeFormat("pl-PL", { weekday: "long" }).format(new Date(year, month - 1, day))
+}
+
+function repeatPlan(start, until, repeat, editing) {
+  if (editing || !repeat) return { dates: [start] }
+  if (!until || until < start) {
+    return { error: "Wybierz datę końca powtórzenia, nie wcześniejszą niż początek." }
+  }
+  const daily = repeat === "day"
+  const dates = daily ? dailyDates(start, until) : weeklyDates(start, until)
+  const step = daily ? 1 : 7
+  if (addDays(dates[dates.length - 1], step) <= until) {
+    return {
+      error: daily
+        ? "Jedno powtórzenie może mieć najwyżej 40 dni."
+        : "Jedno powtórzenie może mieć najwyżej 40 tygodni.",
+    }
+  }
+  return { dates }
+}
+
+function RepeatChoices({ repeat, until, start, filled, onRepeat, onUntil }) {
+  const options = [
+    { id: "week", label: "Powtarzaj co tydzień" },
+    { id: "day", label: "Powtarzaj do dnia" },
+  ]
+  return (
+    <>
+      {options.map((option) => {
+        const active = repeat === option.id
+        return (
+          <button
+            key={option.id}
+            type="button"
+            aria-pressed={active}
+            onClick={() => onRepeat(active ? "" : option.id)}
+            className={`rounded-xl border px-4 py-2.5 text-sm font-semibold transition ${
+              active ? filled : "border-stone-300 bg-transparent text-stone-400 hover:bg-stone-50"
+            }`}
+          >
+            {option.label}
+          </button>
+        )
+      })}
+      {repeat && (
+        <label className="flex items-center gap-2 text-sm font-medium text-stone-700">
+          Do dnia{until ? ` · ${weekdayName(until)}` : ""}
+          <input
+            type="date"
+            min={start || undefined}
+            value={until}
+            onChange={(event) => onUntil(event.target.value)}
+            className="rounded-xl border border-stone-300 bg-white px-3 py-2.5 text-sm outline-none ring-teal-800 focus:ring-2"
+          />
+        </label>
+      )}
+    </>
+  )
 }
 
 function lessonEndsAt(lesson) {
@@ -307,7 +377,7 @@ function EntrySwitch({ mode, onLesson, onOwn, onFree, compact = false }) {
     { id: "free", label: "Wolne godziny", onClick: onFree, activeClass: "bg-sky-800 text-white" },
   ]
   return (
-    <div className={cx("flex flex-nowrap justify-end", compact ? "gap-1" : "flex-wrap gap-2")}>
+    <div className={cx("flex flex-nowrap justify-end", compact ? "gap-1.5 sm:gap-1" : "flex-wrap gap-2")}>
       {options.map((option) => (
         <button
           key={option.id}
@@ -316,7 +386,7 @@ function EntrySwitch({ mode, onLesson, onOwn, onFree, compact = false }) {
           onClick={option.onClick}
           className={cx(
             "shrink-0 whitespace-nowrap rounded-full font-medium transition",
-            compact ? "px-1.5 py-1 text-xs! leading-none!" : "px-3 py-1.5 text-sm",
+            compact ? "px-3 py-2 text-sm! leading-none! sm:px-1.5 sm:py-1 sm:text-xs!" : "px-3 py-1.5 text-sm",
             mode === option.id ? option.activeClass : "bg-stone-100 text-stone-700 hover:bg-stone-200",
           )}
         >
@@ -415,13 +485,30 @@ export default function CalendarBoard({
   onUpdatePersonal,
   onDeletePersonal,
   parents = {},
+  studentActive = {},
   onSaveParent,
+  onSetStudentActive,
   onRenameStudent,
   onUpdateFree,
   onCreateFree,
+  day,
+  onDayChange,
+  mode = "plan",
+  onMode,
+  payout = null,
+  copy = null,
+  freeAdd = null,
+  children,
 }) {
   const now = useMinuteClock()
-  const [selected, setSelected] = useState(null)
+  const [innerDay, setInnerDay] = useState(null)
+  const selected = onDayChange ? day : innerDay
+  const entrySlide = useRef(0)
+  function commitSelected(next) {
+    entrySlide.current = 0
+    if (onDayChange) onDayChange(next)
+    else setInnerDay(next)
+  }
   const [form, setForm] = useState(EMPTY_FORM)
   const [formError, setFormError] = useState({})
   const [editingId, setEditingId] = useState(null)
@@ -429,6 +516,7 @@ export default function CalendarBoard({
   const [saving, setSaving] = useState(false)
   const [payError, setPayError] = useState("")
   const [studentScope, setStudentScope] = useState("wszystko")
+  const [activityFilter, setActivityFilter] = useState("wszyscy")
   const [intent, setIntent] = useState(null)
   const [own, setOwn] = useState({ title: "", startsAt: "16:00", endsAt: "17:00" })
   const [ownId, setOwnId] = useState(null)
@@ -443,6 +531,10 @@ export default function CalendarBoard({
   const [studentDraft, setStudentDraft] = useState({ name: "", discord: "" })
   const [studentError, setStudentError] = useState("")
   const [studentBusy, setStudentBusy] = useState(false)
+  const [repeat, setRepeat] = useState("")
+  const [until, setUntil] = useState("")
+  const [statusBusy, setStatusBusy] = useState("")
+  const [statusError, setStatusError] = useState({ key: "", message: "" })
 
   const names = people?.length ? people : [person]
   const nameSet = new Set(names)
@@ -554,6 +646,12 @@ export default function CalendarBoard({
       }
     })
     .sort((a, b) => a.name.localeCompare(b.name, "pl"))
+  const shownStudents = students.filter((student) => {
+    const active = studentActive[student.key] !== false
+    if (activityFilter === "aktywni") return active
+    if (activityFilter === "nieaktywni") return !active
+    return true
+  })
   const cells = buildMonthCells(year, month)
   const today = todayKey()
   const dayLessons = selected ? (byDate.get(selected) ?? []) : []
@@ -632,6 +730,22 @@ export default function CalendarBoard({
     setFreeDraft(null)
     setFreeForm({ startsAt: "15:00", endsAt: "18:00" })
     setFreeError("")
+    setRepeat("")
+    setUntil("")
+  }
+
+  async function setStudentStatus(key, active) {
+    if (!onSetStudentActive || statusBusy) return
+    if ((studentActive[key] !== false) === active) return
+    setStatusBusy(key)
+    setStatusError({ key: "", message: "" })
+    try {
+      await onSetStudentActive(key, active)
+    } catch (error) {
+      setStatusError({ key, message: error.message || "Nie udało się zapisać statusu." })
+    } finally {
+      setStatusBusy("")
+    }
   }
 
   function beginStudentEdit(student) {
@@ -703,6 +817,11 @@ export default function CalendarBoard({
       setFreeError("Godzina końca musi być późniejsza niż początek.")
       return
     }
+    const plan = repeatPlan(selected, until, repeat, Boolean(freeDraft?.id))
+    if (plan.error) {
+      setFreeError(plan.error)
+      return
+    }
     setFreeBusy(true)
     setFreeError("")
     try {
@@ -714,8 +833,12 @@ export default function CalendarBoard({
         })
         cancelFreeEdit()
       } else if (onCreateFree) {
-        await onCreateFree([{ date: selected, startsAt: freeForm.startsAt, endsAt: freeForm.endsAt }])
+        await onCreateFree(
+          plan.dates.map((date) => ({ date, startsAt: freeForm.startsAt, endsAt: freeForm.endsAt })),
+        )
         setFreeForm({ startsAt: "15:00", endsAt: "18:00" })
+        setRepeat("")
+        setUntil("")
       }
     } catch (error) {
       setFreeError(error.message)
@@ -727,19 +850,31 @@ export default function CalendarBoard({
   function shift(delta) {
     const next = new Date(year, month + delta, 1)
     onYearMonth(next.getFullYear(), next.getMonth())
-    setSelected(null)
+    commitSelected(null)
     resetForm()
   }
 
   function goToday() {
     const now = new Date()
     onYearMonth(now.getFullYear(), now.getMonth())
-    setSelected(null)
+    commitSelected(null)
     resetForm()
   }
 
   function pickDay(key) {
-    setSelected((current) => (current === key ? null : key))
+    if (mode === "payout" && payout) {
+      payout.onToggle(key)
+      return
+    }
+    if (mode === "copy" && copy) {
+      copy.onToggle(key)
+      return
+    }
+    if (mode === "add" && freeAdd) {
+      freeAdd.onToggle(key)
+      return
+    }
+    commitSelected(selected === key ? null : key)
     resetForm()
   }
 
@@ -762,8 +897,9 @@ export default function CalendarBoard({
 
   function startAdd(kind) {
     const now = new Date()
+    onMode?.("plan")
     onYearMonth(now.getFullYear(), now.getMonth())
-    setSelected(today)
+    commitSelected(today)
     setEditingId(null)
     setOwnId(null)
     setConfirmId(null)
@@ -774,6 +910,8 @@ export default function CalendarBoard({
     setFreeDraft(null)
     setFreeError("")
     setForm({ ...EMPTY_FORM, kind })
+    setRepeat("")
+    setUntil("")
     setIntent(kind === "probna" ? "trial" : "student")
     requestAnimationFrame(() => {
       document.getElementById("day-panel")?.scrollIntoView({ behavior: "smooth", block: "nearest" })
@@ -782,8 +920,9 @@ export default function CalendarBoard({
 
   function startOwn() {
     const now = new Date()
+    onMode?.("plan")
     onYearMonth(now.getFullYear(), now.getMonth())
-    setSelected(today)
+    commitSelected(today)
     resetForm()
     setIntent("own")
     requestAnimationFrame(() => {
@@ -792,7 +931,8 @@ export default function CalendarBoard({
   }
 
   function editOwn(event) {
-    setSelected(event.date)
+    onMode?.("plan")
+    commitSelected(event.date)
     setEditingId(null)
     setOwnId(event.id)
     setOwn({ title: event.title, startsAt: event.startsAt, endsAt: event.endsAt })
@@ -807,7 +947,8 @@ export default function CalendarBoard({
   }
 
   function editLesson(lesson) {
-    setSelected(lesson.date)
+    onMode?.("plan")
+    commitSelected(lesson.date)
     setEditingId(lesson.id)
     setOwnId(null)
     setFreeDraft(null)
@@ -869,12 +1010,19 @@ export default function CalendarBoard({
       setOwnError("Godzina końca musi być późniejsza niż początek.")
       return
     }
+    const plan = repeatPlan(selected, until, repeat, Boolean(ownId))
+    if (plan.error) {
+      setOwnError(plan.error)
+      return
+    }
     setSaving(true)
     setOwnError("")
-    const payload = { date: selected, title, startsAt: own.startsAt, endsAt: own.endsAt }
+    const payload = { title, startsAt: own.startsAt, endsAt: own.endsAt }
     try {
-      if (ownId) await onUpdatePersonal(ownId, payload)
-      else await onCreatePersonal(payload)
+      if (ownId) await onUpdatePersonal(ownId, { ...payload, date: selected })
+      else {
+        for (const date of plan.dates) await onCreatePersonal({ ...payload, date })
+      }
       resetForm()
     } catch (error) {
       setOwnError(error.message || "Nie udało się zapisać własnych zajęć.")
@@ -892,11 +1040,12 @@ export default function CalendarBoard({
     if (!studentName) nextError.studentName = "Podaj imię."
     if (!discord) nextError.discord = "Podaj nazwę na Discordzie."
     if (!form.startsAt) nextError.startsAt = "Podaj godzinę rozpoczęcia."
+    const plan = repeatPlan(selected, until, repeat, Boolean(editingId))
+    if (plan.error) nextError.form = plan.error
     setFormError(nextError)
     if (Object.keys(nextError).length || !selected) return
 
     const payload = {
-      date: selected,
       studentName,
       discord,
       startsAt: form.startsAt,
@@ -907,8 +1056,10 @@ export default function CalendarBoard({
 
     setSaving(true)
     try {
-      if (editingId) await onUpdate(editingId, payload)
-      else await onCreate(payload)
+      if (editingId) await onUpdate(editingId, { ...payload, date: selected })
+      else {
+        for (const date of plan.dates) await onCreate({ ...payload, date })
+      }
       resetForm()
     } catch (error) {
       setFormError({ form: error.message || "Nie udało się zapisać lekcji." })
@@ -925,6 +1076,37 @@ export default function CalendarBoard({
   }
 
   const entryMode = intent === "own" ? "own" : intent === "free" ? "free" : "lesson"
+  const canSwipeEntries = canEdit && !editingId && !ownId && !freeDraft?.id
+  const entryTouch = useRef(null)
+
+  function showEntry(next) {
+    if (!canSwipeEntries) return
+    const from = ENTRY_MODES.indexOf(entryMode)
+    const to = ENTRY_MODES.indexOf(next)
+    if (to < 0 || to === from) return
+    entrySlide.current = to > from ? 1 : -1
+    if (next === "own") openOwn()
+    else if (next === "free") openFree()
+    else openLesson()
+  }
+
+  function onEntryTouchStart(event) {
+    if (!canSwipeEntries) return
+    if (event.target.closest("button")) return
+    const touch = event.changedTouches[0]
+    entryTouch.current = { x: touch.clientX, y: touch.clientY }
+  }
+
+  function onEntryTouchEnd(event) {
+    if (!entryTouch.current) return
+    const touch = event.changedTouches[0]
+    const dx = touch.clientX - entryTouch.current.x
+    const dy = touch.clientY - entryTouch.current.y
+    entryTouch.current = null
+    if (Math.abs(dx) < 56 || Math.abs(dx) < Math.abs(dy)) return
+    const next = ENTRY_MODES[ENTRY_MODES.indexOf(entryMode) + (dx < 0 ? 1 : -1)]
+    if (next) showEntry(next)
+  }
   const showComposer = canEdit || Boolean(freeDraft?.id) || (canEditLessons && Boolean(editingId))
   const splitDay = showComposer && dayEntries.length > 0
   const composerClass = cx(
@@ -993,6 +1175,42 @@ export default function CalendarBoard({
             </button>
           </div>
         </div>
+        {(payout || copy || freeAdd) && (
+          <div className="mb-4 flex flex-wrap gap-2">
+            {[
+              ["plan", "Plan"],
+              payout ? ["payout", "Wypłata"] : null,
+              copy ? ["copy", copy.label || "Kopiuj wolne"] : null,
+              freeAdd ? ["add", "Dodaj wolne"] : null,
+            ]
+              .filter(Boolean)
+              .map(([id, label]) => {
+                const active = mode === id
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    aria-pressed={active}
+                    onClick={() => onMode?.(id)}
+                    className={`relative rounded-full px-3 py-1.5 text-sm font-medium transition ${
+                      active ? "text-white" : "bg-stone-100 text-stone-700 hover:bg-stone-200"
+                    }`}
+                  >
+                    {active && (
+                      <motion.span
+                        layoutId="calendar-mode"
+                        className={`absolute inset-0 rounded-full ${
+                          id === "add" ? "bg-sky-800" : id === "copy" ? "bg-blue-700" : id === "payout" ? "bg-teal-800" : "bg-stone-900"
+                        }`}
+                        transition={{ duration: 0.18 }}
+                      />
+                    )}
+                    <span className="relative">{label}</span>
+                  </button>
+                )
+              })}
+          </div>
+        )}
 
                 <div className="grid grid-cols-7 gap-1 sm:gap-2">
           {WEEKDAYS.map((day, index) => (
@@ -1012,27 +1230,45 @@ export default function CalendarBoard({
             const items = byDate.get(key) ?? []
             const slots = slotsByDate.get(key) ?? []
             const ownItems = personalByDate.get(key) ?? []
-            const isSelected = selected === key
+            const isSelected = selected === key && mode === "plan"
             const isToday = key === today
             const weekend = index % 7 >= 5
             const payCounts = canMarkPayment ? dayPayCounts(items) : []
+            const payoutOn = Boolean(payout?.days?.has(key))
+            const copyOn = Boolean(mode === "copy" && copy?.days?.has(key))
+            const copyable = mode !== "copy" || Boolean(copy?.marked?.has(key))
+            const addOn = Boolean(mode === "add" && freeAdd?.days?.has(key))
+            const addable = mode !== "add" || key >= today
             return (
               <button
                 key={key}
                 type="button"
-                aria-pressed={isSelected}
+                aria-pressed={mode === "payout" ? payoutOn : mode === "copy" ? copyOn : mode === "add" ? addOn : isSelected}
                 aria-label={`${day}, ${items.length} ${lessonsLabel(items.length)}, ${slots.length} wolnych`}
                 onClick={() => pickDay(key)}
                 className={cx(
-                  "flex min-h-16 flex-col rounded-xl border p-1 text-left transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-800 sm:min-h-28 sm:rounded-2xl sm:p-2",
-                  isSelected
-                    ? "border-teal-800 bg-teal-50 shadow-sm"
-                    : weekend
-                      ? "border-stone-200 bg-stone-50 hover:border-stone-300"
-                      : "border-stone-200 bg-white hover:border-stone-300",
+                  "relative flex min-h-16 flex-col rounded-xl border p-1 text-left transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-800 sm:min-h-28 sm:rounded-2xl sm:p-2",
+                  addOn
+                    ? "border-sky-600 bg-sky-50 ring-2 ring-sky-600"
+                    : copyOn
+                      ? "border-blue-600 bg-blue-50 ring-2 ring-blue-600"
+                      : isSelected
+                        ? "border-teal-800 bg-teal-50 shadow-sm"
+                        : payoutOn
+                          ? "border-teal-700 bg-teal-50"
+                          : (mode === "copy" && !copyable) || (mode === "add" && !addable)
+                            ? "border-stone-200 bg-stone-50 opacity-40"
+                            : weekend
+                              ? "border-stone-200 bg-stone-50 hover:border-stone-300"
+                              : "border-stone-200 bg-white hover:border-stone-300",
                 )}
               >
-                <span className="inline-flex items-center gap-1">
+                {payoutOn && (
+                  <span className="absolute top-1 right-1 inline-flex h-4 w-4 items-center justify-center rounded-full bg-teal-800 text-[10px] font-bold text-white">
+                    ✓
+                  </span>
+                )}
+                <span className="flex items-start gap-0.5 sm:inline-flex sm:items-center sm:gap-1">
                   <span
                     className={cx(
                       "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold",
@@ -1041,11 +1277,15 @@ export default function CalendarBoard({
                   >
                     {day}
                   </span>
-                  {payCounts.map((mark) => (
-                    <span key={mark.key} className={cx("text-[10px] font-bold leading-none whitespace-nowrap sm:text-xs", mark.className)}>
-                      {mark.count > 1 ? `${mark.count}x` : "x"}
+                  {payCounts.length > 0 && (
+                    <span className="flex flex-col sm:flex-row sm:items-center sm:gap-1">
+                      {payCounts.map((mark) => (
+                        <span key={mark.key} className={cx("text-[10px] font-bold leading-none whitespace-nowrap sm:text-xs", mark.className)}>
+                          {mark.count > 1 ? `${mark.count}x` : "x"}
+                        </span>
+                      ))}
                     </span>
-                  ))}
+                  )}
                 </span>
                 <div className="mt-1 hidden space-y-1 sm:block">
                   {(() => {
@@ -1178,11 +1418,188 @@ export default function CalendarBoard({
               </span>
             </>
           )}
+          {payout && (
+            <span className="inline-flex items-center gap-1.5">
+              <span className="inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-teal-800 text-[9px] font-bold text-white">✓</span>
+              Do wypłaty
+            </span>
+          )}
         </div>
+        <AnimatePresence initial={false}>
+          {copy && mode === "copy" && (
+            <motion.div
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 6 }}
+              transition={{ duration: 0.18 }}
+              className="mt-4 rounded-2xl border border-stone-200 bg-stone-50 p-3"
+            >
+              <p className="text-sm text-stone-600">Zaznacz dni z wolnymi godzinami albo skrót.</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {[2, 3, 4, 5].map((count) => (
+                  <button
+                    key={count}
+                    type="button"
+                    aria-pressed={copy.spanActive(count)}
+                    onClick={() => copy.onSpan(count)}
+                    className={`rounded-xl px-3 py-2 text-sm font-semibold transition ${
+                      copy.spanActive(count) ? "bg-blue-700 text-white" : "bg-white text-stone-800 hover:bg-stone-100"
+                    }`}
+                  >
+                    {count} dni
+                  </button>
+                ))}
+              </div>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={copy.onCopy}
+                  disabled={copy.days.size === 0}
+                  className="rounded-xl bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-800 disabled:opacity-60"
+                >
+                  Kopiuj
+                </button>
+                <button type="button" onClick={copy.onClose} className="rounded-xl px-3 py-2 text-sm font-medium text-stone-500">
+                  Anuluj
+                </button>
+                {copy.copied && <span className="text-sm font-medium text-blue-800">Skopiowano.</span>}
+                {copy.error && <span className="text-sm text-red-700">{copy.error}</span>}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+        <AnimatePresence initial={false}>
+          {freeAdd && mode === "add" && (
+            <motion.div
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 6 }}
+              transition={{ duration: 0.18 }}
+              className="mt-4 rounded-2xl border border-stone-200 bg-stone-50 p-3"
+            >
+              <p className="text-sm text-stone-600">Zaznacz dni w kalendarzu. Godziny ustawisz na kafelku.</p>
+              {freeAdd.entries.length > 0 && (
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                  <AnimatePresence initial={false}>
+                    {freeAdd.entries.map((entry) => {
+                      const name = weekdayName(entry.date)
+                      return (
+                      <motion.div
+                        key={entry.date}
+                        layout
+                        initial={{ opacity: 0, y: 6 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: 6 }}
+                        transition={{ duration: 0.18 }}
+                        className="rounded-2xl border border-sky-200 bg-white p-3"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-sm font-semibold text-stone-900">
+                            {`${name.charAt(0).toUpperCase()}${name.slice(1)} ${formatShort(entry.date)}`}
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => freeAdd.onToggle(entry.date)}
+                            className="shrink-0 text-sm font-medium text-stone-500"
+                          >
+                            Usuń
+                          </button>
+                        </div>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          <label className="block">
+                            <span className="mb-1 block text-sm font-medium text-stone-700">Od</span>
+                            <input
+                              type="time"
+                              value={entry.startsAt}
+                              onChange={(event) => freeAdd.onHours(entry.date, "startsAt", event.target.value)}
+                              className="rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm outline-none ring-sky-700 focus:ring-2"
+                            />
+                          </label>
+                          <label className="block">
+                            <span className="mb-1 block text-sm font-medium text-stone-700">Do</span>
+                            <input
+                              type="time"
+                              value={entry.endsAt}
+                              onChange={(event) => freeAdd.onHours(entry.date, "endsAt", event.target.value)}
+                              className="rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm outline-none ring-sky-700 focus:ring-2"
+                            />
+                          </label>
+                        </div>
+                      </motion.div>
+                      )
+                    })}
+                  </AnimatePresence>
+                </div>
+              )}
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={freeAdd.onAdd}
+                  disabled={freeAdd.days.size === 0 || freeAdd.busy}
+                  className="rounded-xl bg-sky-800 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-sky-900 disabled:opacity-60"
+                >
+                  {freeAdd.busy ? "Zapisywanie…" : freeAdd.days.size > 1 ? `Dodaj ${freeAdd.days.size} dni` : "Dodaj"}
+                </button>
+                <button type="button" onClick={freeAdd.onClose} className="rounded-xl px-3 py-2 text-sm font-medium text-stone-500">
+                  Anuluj
+                </button>
+                {freeAdd.saved && <span className="text-sm font-medium text-sky-800">Dodano.</span>}
+                {freeAdd.error && <span className="text-sm text-red-700">{freeAdd.error}</span>}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+        <AnimatePresence initial={false}>
+          {payout && payout.days.size > 0 && (
+            <motion.div
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 6 }}
+              transition={{ duration: 0.18 }}
+              className="mt-4 border-t border-stone-200 pt-4"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-stone-500">
+                  Do wypłaty · dni: {payout.days.size}
+                </p>
+                <button
+                  type="button"
+                  onClick={payout.onClear}
+                  className="rounded-xl border border-stone-200 px-3 py-2 text-sm font-medium text-stone-700 transition hover:bg-stone-50"
+                >
+                  Wyczyść
+                </button>
+              </div>
+              <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                {payout.rows.map((row) => (
+                  <div key={row.name} className="rounded-2xl border border-stone-200 px-3 py-3">
+                    <p className="text-sm font-semibold text-stone-900">{row.name}</p>
+                    <p className="mt-1 text-lg font-semibold text-teal-950">{formatMoney(row.due)}</p>
+                    {row.lines.length > 0 && (
+                      <ul className="mt-2 space-y-1">
+                        {row.lines.map(({ lesson, amount }) => (
+                          <li key={lesson.id} className="text-xs text-stone-600">
+                            {formatShort(lesson.date)}
+                            {lesson.startsAt ? ` · ${String(lesson.startsAt).slice(0, 5)}` : ""} · {lesson.studentName} · {formatMoney(amount)}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <p className="mt-4 text-sm text-stone-500">Razem</p>
+              <p className="text-2xl font-semibold text-stone-900">{formatMoney(payout.due)}</p>
+              {payout.settled > 0 && (
+                <p className="mt-1 text-sm text-stone-500">Już wypłacone w tych dniach: {formatMoney(payout.settled)}</p>
+              )}
+            </motion.div>
+          )}
+        </AnimatePresence>
       </section>
 
       <AnimatePresence mode="wait">
-        {selected && (
+        {selected && mode === "plan" && (
           <motion.section
             id="day-panel"
             key={selected}
@@ -1204,7 +1621,7 @@ export default function CalendarBoard({
             <div className="mt-4">
               {canEdit && !editingId && !ownId && (
                 <div className="mb-4 hidden lg:block">
-                  <EntrySwitch mode={entryMode} onLesson={openLesson} onOwn={openOwn} onFree={openFree} />
+                  <EntrySwitch mode={entryMode} onLesson={() => showEntry("lesson")} onOwn={() => showEntry("own")} onFree={() => showEntry("free")} />
                 </div>
               )}
               <div className={cx("grid items-start gap-6", splitDay && "lg:grid-cols-2 lg:gap-8")}>
@@ -1427,11 +1844,24 @@ export default function CalendarBoard({
                 </p>
               )}
 
-              {showComposer && entryMode === "own" ? (
+              {showComposer && (
+              <motion.div
+                key={entryMode}
+                initial={entrySlide.current === 0 ? false : { x: entrySlide.current * 28, opacity: 0 }}
+                animate={{ x: 0, opacity: 1 }}
+                transition={{ duration: 0.22, ease: "easeOut" }}
+                className={cx("min-w-0", canSwipeEntries && "touch-pan-y")}
+                onTouchStart={onEntryTouchStart}
+                onTouchEnd={onEntryTouchEnd}
+                onTouchCancel={() => {
+                  entryTouch.current = null
+                }}
+              >
+              {entryMode === "own" ? (
                 <form onSubmit={submitOwn} className={composerClass}>
                   <ComposerHeading title={ownId ? "Edycja własnych zajęć" : "Własne zajęcia"}>
                     {canEdit && !editingId && !ownId && (
-                      <EntrySwitch compact mode={entryMode} onLesson={openLesson} onOwn={openOwn} onFree={openFree} />
+                      <EntrySwitch compact mode={entryMode} onLesson={() => showEntry("lesson")} onOwn={() => showEntry("own")} onFree={() => showEntry("free")} />
                     )}
                   </ComposerHeading>
                   <p className="text-sm text-stone-500 sm:col-span-2">Widoczne tylko u Ciebie.</p>
@@ -1465,14 +1895,27 @@ export default function CalendarBoard({
                       className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2.5 text-sm outline-none ring-indigo-700 focus:ring-2"
                     />
                   </label>
-                  <div className="flex flex-wrap gap-2 sm:col-span-2">
+                  <div className="flex flex-wrap items-center gap-2 sm:col-span-2">
                     <button
                       type="submit"
                       disabled={saving}
                       className="rounded-xl bg-indigo-800 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-900 disabled:opacity-60"
                     >
-                      {saving ? "Zapisywanie…" : ownId ? "Zapisz zmiany" : "Dodaj"}
+                      {saving ? "Zapisywanie…" : ownId ? "Zapisz zmiany" : repeat ? "Dodaj terminy" : "Dodaj"}
                     </button>
+                    {canEdit && !ownId && (
+                      <RepeatChoices
+                        repeat={repeat}
+                        until={until}
+                        start={selected}
+                        filled="border-indigo-800 bg-indigo-800 text-white hover:bg-indigo-900"
+                        onRepeat={(next) => {
+                          setRepeat(next)
+                          if (next && !until && selected) setUntil(addDays(selected, next === "day" ? 7 : 28))
+                        }}
+                        onUntil={setUntil}
+                      />
+                    )}
                     <button
                       type="button"
                       onClick={resetForm}
@@ -1482,11 +1925,11 @@ export default function CalendarBoard({
                     </button>
                   </div>
                 </form>
-              ) : showComposer && entryMode === "free" ? (
+              ) : entryMode === "free" ? (
                 <form onSubmit={saveFree} className={composerClass}>
                   <ComposerHeading title={freeDraft?.id ? "Edycja wolnych godzin" : "Wolne godziny"}>
                     {canEdit && !editingId && !ownId && (
-                      <EntrySwitch compact mode={entryMode} onLesson={openLesson} onOwn={openOwn} onFree={openFree} />
+                      <EntrySwitch compact mode={entryMode} onLesson={() => showEntry("lesson")} onOwn={() => showEntry("own")} onFree={() => showEntry("free")} />
                     )}
                   </ComposerHeading>
                   <p className="text-sm text-stone-500 sm:col-span-2">Na wybrany dzień.</p>
@@ -1509,14 +1952,27 @@ export default function CalendarBoard({
                       className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2.5 text-sm outline-none ring-sky-700 focus:ring-2"
                     />
                   </label>
-                  <div className="flex flex-wrap gap-2 sm:col-span-2">
+                  <div className="flex flex-wrap items-center gap-2 sm:col-span-2">
                     <button
                       type="submit"
                       disabled={freeBusy}
                       className="rounded-xl bg-sky-800 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-sky-900 disabled:opacity-60"
                     >
-                      {freeBusy ? "Zapisywanie…" : freeDraft?.id ? "Zapisz" : "Dodaj"}
+                      {freeBusy ? "Zapisywanie…" : freeDraft?.id ? "Zapisz" : repeat ? "Dodaj terminy" : "Dodaj"}
                     </button>
+                    {canEdit && !freeDraft?.id && (
+                      <RepeatChoices
+                        repeat={repeat}
+                        until={until}
+                        start={selected}
+                        filled="border-sky-800 bg-sky-800 text-white hover:bg-sky-900"
+                        onRepeat={(next) => {
+                          setRepeat(next)
+                          if (next && !until && selected) setUntil(addDays(selected, next === "day" ? 7 : 28))
+                        }}
+                        onUntil={setUntil}
+                      />
+                    )}
                     {freeDraft?.id && (
                       <button
                         type="button"
@@ -1528,7 +1984,7 @@ export default function CalendarBoard({
                     )}
                   </div>
                 </form>
-              ) : showComposer ? (
+              ) : (
                 <form onSubmit={submit} className={composerClass}>
                   <ComposerHeading
                     title={
@@ -1542,7 +1998,7 @@ export default function CalendarBoard({
                     }
                   >
                     {canEdit && !editingId && !ownId && (
-                      <EntrySwitch compact mode={entryMode} onLesson={openLesson} onOwn={openOwn} onFree={openFree} />
+                      <EntrySwitch compact mode={entryMode} onLesson={() => showEntry("lesson")} onOwn={() => showEntry("own")} onFree={() => showEntry("free")} />
                     )}
                   </ComposerHeading>
                   <label className="block">
@@ -1621,14 +2077,27 @@ export default function CalendarBoard({
                       onChange={(value) => setField("level", value)}
                     />
                   </div>
-                  <div className="flex flex-wrap gap-2 sm:col-span-2">
+                  <div className="flex flex-wrap items-center gap-2 sm:col-span-2">
                     <button
                       type="submit"
                       disabled={saving}
                       className="rounded-xl bg-teal-800 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-teal-900 disabled:opacity-60"
                     >
-                      {saving ? "Zapisywanie…" : editingId ? "Zapisz zmiany" : "Dodaj lekcję"}
+                      {saving ? "Zapisywanie…" : editingId ? "Zapisz zmiany" : repeat ? "Dodaj lekcje" : "Dodaj lekcję"}
                     </button>
+                    {canEdit && !editingId && (
+                      <RepeatChoices
+                        repeat={repeat}
+                        until={until}
+                        start={selected}
+                        filled="border-teal-800 bg-teal-800 text-white hover:bg-teal-900"
+                        onRepeat={(next) => {
+                          setRepeat(next)
+                          if (next && !until && selected) setUntil(addDays(selected, next === "day" ? 7 : 28))
+                        }}
+                        onUntil={setUntil}
+                      />
+                    )}
                     {editingId && (
                       <button
                         type="button"
@@ -1640,68 +2109,99 @@ export default function CalendarBoard({
                     )}
                   </div>
                 </form>
-              ) : null}
+              )}
+              </motion.div>
+              )}
               </div>
             </div>
           </motion.section>
         )}
       </AnimatePresence>
+      {children}
 
 
       <section>
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <h2 className="text-lg font-semibold text-stone-900">Uczniowie</h2>
-          <div className="flex gap-1.5">
-            {[
-              ["miesiac", "Miesiąc"],
-              ["rok", "Rok"],
-              ["wszystko", "Wszystko"],
-            ].map(([id, label]) => (
-              <button
-                key={id}
-                type="button"
-                aria-pressed={studentScope === id}
-                onClick={() => setStudentScope(id)}
-                className={cx(
-                  "rounded-full px-3 py-1.5 text-sm font-medium transition",
-                  studentScope === id
-                    ? "bg-stone-900 text-white"
-                    : "bg-stone-100 text-stone-700 hover:bg-stone-200",
-                )}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
+        <h2 className="text-lg font-semibold text-stone-900">Uczniowie</h2>
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          {[
+            ["miesiac", "Miesiąc"],
+            ["rok", "Rok"],
+            ["wszystko", "Wszystko"],
+          ].map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              aria-pressed={studentScope === id}
+              onClick={() => setStudentScope(id)}
+              className={cx(
+                "rounded-full px-3 py-1.5 text-sm font-medium transition",
+                studentScope === id
+                  ? "bg-stone-900 text-white"
+                  : "bg-stone-100 text-stone-700 hover:bg-stone-200",
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          {[
+            ["aktywni", "Aktywni"],
+            ["nieaktywni", "Nieaktywni"],
+            ["wszyscy", "Wszyscy"],
+          ].map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              aria-pressed={activityFilter === id}
+              onClick={() => setActivityFilter(id)}
+              className={cx(
+                "rounded-full px-3 py-1.5 text-sm font-medium transition",
+                activityFilter === id
+                  ? "bg-stone-900 text-white"
+                  : "bg-stone-100 text-stone-700 hover:bg-stone-200",
+              )}
+            >
+              {label}
+            </button>
+          ))}
         </div>
         <AnimatePresence mode="wait" initial={false}>
           <motion.div
-            key={studentScope}
+            key={`${studentScope}-${activityFilter}`}
             initial={{ opacity: 0, y: 6 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 4 }}
             transition={{ duration: 0.18 }}
           >
-        {students.length === 0 ? (
+        {shownStudents.length === 0 ? (
           <p className="mt-3 text-sm text-stone-500">
-            {studentScope === "miesiac"
-              ? "W tym miesiącu nie ma uczniów."
-              : studentScope === "rok"
-                ? "W tym roku nie ma uczniów."
-                : "Nie ma jeszcze uczniów."}
+            {students.length === 0
+              ? studentScope === "miesiac"
+                ? "W tym miesiącu nie ma uczniów."
+                : studentScope === "rok"
+                  ? "W tym roku nie ma uczniów."
+                  : "Nie ma jeszcze uczniów."
+              : activityFilter === "aktywni"
+                ? "Nie ma aktywnych uczniów."
+                : "Nie ma nieaktywnych uczniów."}
           </p>
         ) : (
           <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
-            {students.map((student) => {
+            {shownStudents.map((student) => {
               const draftKey = studentDraft.discord.trim().toLowerCase() || studentDraft.name.trim().toLowerCase()
               const mergeLesson =
                 editingStudent === student.key && draftKey && draftKey !== student.key
                   ? lessons.find((lesson) => studentKey(lesson) === draftKey)
                   : null
+              const active = studentActive[student.key] !== false
               return (
               <div
                 key={student.key}
-                className="flex min-h-32 flex-col rounded-2xl border border-stone-200 bg-white p-3"
+                className={cx(
+                  "flex min-h-32 flex-col rounded-2xl border p-3",
+                  active ? "border-stone-200 bg-white" : "border-stone-200 bg-stone-100",
+                )}
               >
                 {editingStudent === student.key ? (
                   <motion.form
@@ -1757,7 +2257,7 @@ export default function CalendarBoard({
                 ) : (
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
-                      <p className="truncate text-sm font-semibold text-stone-900">{student.name}</p>
+                      <p className={cx("truncate text-sm font-semibold", active ? "text-stone-900" : "text-stone-500")}>{student.name}</p>
                       <p className="mt-0.5 truncate text-xs text-stone-500">{student.discord}</p>
                     </div>
                     {onRenameStudent && (
@@ -1773,6 +2273,32 @@ export default function CalendarBoard({
                 )}
                 {several && (
                   <p className="mt-0.5 truncate text-xs font-medium text-teal-800">{student.tutors.join(", ")}</p>
+                )}
+                <div className="mt-2 grid grid-cols-2 gap-1">
+                  {[
+                    [true, "Aktywny"],
+                    [false, "Nieaktywny"],
+                  ].map(([value, label]) => (
+                    <button
+                      key={label}
+                      type="button"
+                      disabled={!onSetStudentActive || statusBusy === student.key}
+                      onClick={() => setStudentStatus(student.key, value)}
+                      className={cx(
+                        "rounded-lg px-2 py-1.5 text-xs! leading-none! font-semibold transition disabled:opacity-60",
+                        active === value
+                          ? value
+                            ? "bg-teal-800 text-white"
+                            : "bg-stone-500 text-white"
+                          : "border border-stone-200 bg-white text-stone-600",
+                      )}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                {statusError.key === student.key && (
+                  <p className="mt-1 text-xs text-red-700">{statusError.message}</p>
                 )}
                 <div className="mt-2 flex flex-wrap gap-1">
                   {student.levels.map((level) => (

@@ -21,7 +21,7 @@ import {
 } from "./lib/availability"
 import { createLesson, deleteLesson, fetchLessons, renameStudentLessons, setLessonHeld, setLessonPaid, updateLesson } from "./lib/lessons"
 import { createPersonalEvent, deletePersonalEvent, fetchPersonalEvents, personalSpan, updatePersonalEvent } from "./lib/personal"
-import { deleteParent, fetchParents, parentKey, saveParent } from "./lib/parents"
+import { deleteParent, fetchParents, parentKey, saveParent, saveStudentActive } from "./lib/parents"
 import { fetchPrices, savePrices } from "./lib/prices"
 import { saveTutorRates } from "./lib/rates"
 import { forgetThisDevice } from "./lib/push"
@@ -45,6 +45,7 @@ export default function App() {
   const [ready, setReady] = useState(!session)
   const [loadError, setLoadError] = useState("")
   const [parents, setParents] = useState({})
+  const [studentActive, setStudentActive] = useState({})
   const [prices, setPrices] = useState(() => currentPrices())
   const [pricesNote, setPricesNote] = useState("")
   const revision = useRef(0)
@@ -92,7 +93,10 @@ export default function App() {
       }
       try {
         const nextParents = await fetchParents()
-        if (isCurrent(id, seen)) setParents(nextParents)
+        if (isCurrent(id, seen)) {
+          setParents(nextParents.parents)
+          setStudentActive(nextParents.active)
+        }
       } catch (error) {
         message = message ? `${message} ${error.message}` : error.message
       }
@@ -185,12 +189,23 @@ export default function App() {
     setStatuses(emptyStatuses())
     setClosed([])
     setParents({})
+    setStudentActive({})
   }
 
   async function onSaveParent(studentKey, info) {
     const saved = await saveParent(studentKey, info)
     setParents((current) => ({ ...current, [studentKey]: saved }))
     return saved
+  }
+
+  async function onSetStudentActive(studentKey, active) {
+    const saved = await saveStudentActive(studentKey, active)
+    setStudentActive((current) => {
+      const copy = { ...current }
+      if (saved) delete copy[studentKey]
+      else copy[studentKey] = false
+      return copy
+    })
   }
 
   async function onRenameStudent(fromKey, next) {
@@ -211,13 +226,24 @@ export default function App() {
     const kept = String(parents[nextKey] ?? "").trim()
     const extra = String(parents[fromKey] ?? "").trim()
     const merged = !extra || extra === kept ? kept : kept ? `${kept}\n${extra}` : extra
+    const merging = lessons.some((lesson) => parentKey(lesson.discord, lesson.studentName) === nextKey)
+    const sourceInactive = studentActive[fromKey] === false
     if (merged !== kept) {
       const saved = await saveParent(nextKey, merged)
       setParents((current) => ({ ...current, [nextKey]: saved }))
     }
-    if (extra) {
+    if (!merging && sourceInactive) {
+      await saveStudentActive(nextKey, false)
+      setStudentActive((current) => ({ ...current, [nextKey]: false }))
+    }
+    if (extra || sourceInactive) {
       await deleteParent(fromKey)
       setParents((current) => {
+        const copy = { ...current }
+        delete copy[fromKey]
+        return copy
+      })
+      setStudentActive((current) => {
         const copy = { ...current }
         delete copy[fromKey]
         return copy
@@ -456,7 +482,9 @@ export default function App() {
         onSavePrices={onSavePrices}
         onSaveRates={onSaveRates}
         parents={parents}
+        studentActive={studentActive}
         onSaveParent={onSaveParent}
+        onSetStudentActive={onSetStudentActive}
         onRenameStudent={onRenameStudent}
         onUpdateLesson={onUpdate}
       />
@@ -483,7 +511,9 @@ export default function App() {
         onUpdatePersonal={(id, data) => onUpdatePersonal(session.name, id, data)}
         onDeletePersonal={(id) => onDeletePersonal(session.name, id)}
         parents={parents}
+        studentActive={studentActive}
         onSaveParent={onSaveParent}
+        onSetStudentActive={onSetStudentActive}
         onRenameStudent={onRenameStudent}
       />
     )

@@ -10,19 +10,30 @@ export const DEFAULT_PRICES = {
 
 export const DURATIONS = [45, 60, 90]
 
-const SHORT_LESSON_MINUTES = 45
-const LONG_LESSON_MINUTES = 90
-
-const SHORT_LESSON_PRICES = {
-  podstawa: 70,
-  podstawowka: 70,
-  rozszerzenie: 80,
+const DURATION_PRICE_DEFAULTS = {
+  45: {
+    podstawa: 70,
+    podstawowka: 70,
+    rozszerzenie: 80,
+  },
+  90: {
+    podstawa: 130,
+    podstawowka: 130,
+    rozszerzenie: 140,
+  },
 }
 
-const LONG_LESSON_PRICES = {
-  podstawa: 130,
-  podstawowka: 130,
-  rozszerzenie: 140,
+export function priceKey(level, duration) {
+  const minutes = Number(duration)
+  return minutes === 60 ? level : `${level}:${minutes}`
+}
+
+export function defaultPrices() {
+  const prices = { ...DEFAULT_PRICES }
+  for (const [minutes, levels] of Object.entries(DURATION_PRICE_DEFAULTS)) {
+    for (const [level, price] of Object.entries(levels)) prices[priceKey(level, minutes)] = price
+  }
+  return prices
 }
 
 export const KINDS = [
@@ -59,11 +70,11 @@ const MONTHS = [
 ]
 
 const tutorsByName = new Map()
-const pricesByLevel = new Map(Object.entries(DEFAULT_PRICES))
+const pricesByLevel = new Map(Object.entries(defaultPrices()))
 
 export function rememberPrices(prices) {
   pricesByLevel.clear()
-  for (const [level, price] of Object.entries({ ...DEFAULT_PRICES, ...(prices ?? {}) })) {
+  for (const [level, price] of Object.entries({ ...defaultPrices(), ...(prices ?? {}) })) {
     const value = Number(price)
     if (Number.isFinite(value)) pricesByLevel.set(level, Math.max(0, value))
   }
@@ -78,10 +89,9 @@ function hoursOf(lesson) {
 }
 
 export function lessonPriceFor(level, duration, prices = currentPrices()) {
-  const minutes = Number(duration)
-  if (minutes === SHORT_LESSON_MINUTES && level in SHORT_LESSON_PRICES) return SHORT_LESSON_PRICES[level]
-  if (minutes === LONG_LESSON_MINUTES && level in LONG_LESSON_PRICES) return LONG_LESSON_PRICES[level]
-  return (Number(prices?.[level]) || 0) * (minutes / 60)
+  const direct = Number(prices?.[priceKey(level, duration)])
+  if (Number.isFinite(direct)) return direct
+  return (Number(prices?.[level]) || 0) * (Number(duration) / 60)
 }
 
 export function paySplit(prices, profit, level, duration) {
@@ -200,6 +210,16 @@ export function weeklyDates(start, until) {
   return dates
 }
 
+export function dailyDates(start, until) {
+  const dates = []
+  let cursor = start
+  while (cursor <= until && dates.length < 40) {
+    dates.push(cursor)
+    cursor = addDays(cursor, 1)
+  }
+  return dates
+}
+
 export function monthKey(year, month) {
   return `${year}-${String(month + 1).padStart(2, "0")}`
 }
@@ -271,6 +291,12 @@ export function trialPayout(lesson, stayed) {
   if (lesson.kind !== "probna" || lesson.held !== true || !countsMoney(lesson.tutor)) return 0
   const hourly = tutorShare({ ...lesson, duration: 60 })
   return Math.round(hourly * (stayed ? 1 : 0.5) * 100) / 100
+}
+
+export function tutorPayout(lesson, stayed = false) {
+  if (lesson.kind === "probna") return trialPayout(lesson, stayed)
+  if (!countsTowardMoney(lesson)) return 0
+  return tutorShare(lesson)
 }
 
 export function formatMoney(amount) {

@@ -1,6 +1,6 @@
 import { Fragment, useState } from "react"
 import { AnimatePresence, motion } from "framer-motion"
-import { FreeHours } from "./Availability"
+import { useFreeCopy } from "./Availability"
 import CalendarBoard from "./CalendarBoard"
 import Shell from "./Shell"
 import {
@@ -11,11 +11,14 @@ import {
   formatMoney,
   formatShort,
   labelOf,
+  lessonsLabel,
   lessonProfit,
   lessonRevenue,
+  tutorPayout,
   trialPayout,
   DURATIONS,
   lessonPriceFor,
+  priceKey,
   LEVELS,
   paySplit,
   PRICE_LEVELS,
@@ -25,8 +28,15 @@ import {
 function studentsLabel(count) {
   const mod10 = count % 10
   const mod100 = count % 100
-  if (mod10 === 1 && mod100 !== 11) return "uczeń"
-  return "uczniów"
+  if (mod10 === 1 && mod100 !== 11) return "aktywny uczeń"
+  return "aktywnych uczniów"
+}
+
+function levelTone(id) {
+  if (id === "rozszerzenie") return "text-violet-600"
+  if (id === "podstawa" || id === "podstawowka") return "text-blue-600"
+  if (id === "studia") return "text-amber-600"
+  return "text-stone-600"
 }
 
 function studentKey(lesson) {
@@ -38,7 +48,7 @@ function moneySum(lessons, pick) {
 }
 
 function PriceEditor({ prices, note, onSave }) {
-  const [open, setOpen] = useState(true)
+  const [open, setOpen] = useState(false)
   const [draft, setDraft] = useState(prices)
   const [base, setBase] = useState(prices)
   const [saving, setSaving] = useState(false)
@@ -54,13 +64,15 @@ function PriceEditor({ prices, note, onSave }) {
     if (saving) return
     const next = {}
     for (const level of PRICE_LEVELS) {
-      const value = String(draft[level.id] ?? "").trim()
-      if (!/^\d+$/.test(value)) {
-        setError("Podaj cenę w pełnych złotych.")
-        setSaved(false)
-        return
+      for (const duration of DURATIONS) {
+        const value = String(draft[priceKey(level.id, duration)] ?? "").trim()
+        if (!/^\d+$/.test(value)) {
+          setError("Podaj cenę w pełnych złotych.")
+          setSaved(false)
+          return
+        }
+        for (const id of level.levels) next[priceKey(id, duration)] = Number(value)
       }
-      for (const id of level.levels) next[id] = Number(value)
     }
     setSaving(true)
     setError("")
@@ -85,7 +97,7 @@ function PriceEditor({ prices, note, onSave }) {
       >
         <span>
           <span className="block text-sm font-semibold text-stone-900">Ceny zajęć za godzinę</span>
-          <span className="mt-1 block text-sm text-stone-500">Ile płaci uczeń za godzinę na danym poziomie.</span>
+          <span className="mt-1 block text-sm text-stone-500">Ile płaci uczeń za 45, 60 i 90 minut.</span>
         </span>
         <Chevron open={open} />
       </button>
@@ -101,30 +113,49 @@ function PriceEditor({ prices, note, onSave }) {
             className="overflow-hidden border-t border-stone-200"
           >
             <div className="px-4 py-4">
-              <p className="text-sm text-stone-500">
-                Zajęcia 45 min: podstawa 70 zł, rozszerzenie 80 zł. Zajęcia 90 min: podstawa 130 zł, rozszerzenie 140 zł.
-              </p>
-              <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                {PRICE_LEVELS.map((level) => (
-                  <label key={level.id} className="block">
-                    <span className="mb-1.5 block text-sm font-medium text-stone-700">{level.label}</span>
-                    <span className="flex items-center gap-2">
-                      <input
-                        type="number"
-                        min="0"
-                        step="1"
-                        inputMode="numeric"
-                        value={draft[level.id] ?? ""}
-                        onChange={(event) => {
-                          setDraft((current) => ({ ...current, [level.id]: event.target.value }))
-                          setSaved(false)
-                        }}
-                        className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2.5 text-sm outline-none ring-teal-800 focus:ring-2"
-                      />
-                      <span className="text-sm text-stone-500">zł</span>
-                    </span>
-                  </label>
-                ))}
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[520px] border-separate border-spacing-x-2 text-left">
+                  <thead>
+                    <tr>
+                      <th className="pb-2 pr-3 text-xs font-medium text-stone-500">Poziom</th>
+                      {DURATIONS.map((duration) => (
+                        <th key={duration} className="pb-2 text-xs font-medium text-stone-500">
+                          {duration} min
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {PRICE_LEVELS.map((level) => (
+                      <tr key={level.id}>
+                        <th className="py-1.5 pr-3 text-sm font-medium text-stone-800">{level.label}</th>
+                        {DURATIONS.map((duration) => (
+                          <td key={duration} className="py-1.5">
+                            <label className="flex items-center gap-1">
+                              <input
+                                type="number"
+                                min="0"
+                                step="1"
+                                inputMode="numeric"
+                                aria-label={`${level.label}, ${duration} min`}
+                                value={draft[priceKey(level.id, duration)] ?? ""}
+                                onChange={(event) => {
+                                  setDraft((current) => ({
+                                    ...current,
+                                    [priceKey(level.id, duration)]: event.target.value,
+                                  }))
+                                  setSaved(false)
+                                }}
+                                className="w-20 rounded-lg border border-stone-300 bg-white px-2 py-1.5 text-sm outline-none ring-teal-800 focus:ring-2"
+                              />
+                              <span className="text-xs text-stone-400">zł</span>
+                            </label>
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
               <div className="mt-3 flex flex-wrap items-center gap-3">
                 <button
@@ -192,7 +223,7 @@ function tutorHasLevel(name, level, lessons) {
 
 function RateEditor({ tutors, lessons, prices, onSave }) {
   const people = tutors.filter((tutor) => tutor.countsMoney !== false)
-  const [open, setOpen] = useState(true)
+  const [open, setOpen] = useState(false)
   const [openTutor, setOpenTutor] = useState(() => Object.fromEntries(people.map((tutor) => [tutor.name, true])))
   const [draft, setDraft] = useState(() => rateDraft(people, prices))
   const [base, setBase] = useState(tutors)
@@ -415,52 +446,35 @@ function RateEditor({ tutors, lessons, prices, onSave }) {
   )
 }
 
-function mixLabel(count, one, few, many) {
-  const mod10 = count % 10
-  const mod100 = count % 100
-  const word =
-    mod10 === 1 && mod100 !== 11
-      ? one
-      : mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)
-        ? few
-        : many
-  return `${count} ${word}`
-}
-
-function tutorSummary(name, lessons, today) {
-  const own = lessons.filter((lesson) => lesson.tutor === name)
-  const untilToday = own.filter((lesson) => lesson.date <= today)
-  let trial = 0
-  let basic = 0
-  let extended = 0
-  let studies = 0
-  for (const lesson of untilToday) {
-    if (lesson.kind === "probna") {
-      trial += 1
-      continue
-    }
-    if (lesson.level === "rozszerzenie") extended += 1
-    else if (lesson.level === "studia") studies += 1
-    else basic += 1
-  }
+function tutorSummary(name, lessons, studentActive, year, month) {
   const groups = new Map()
-  for (const lesson of own) {
+  const levelCounts = new Map()
+  for (const lesson of lessons) {
+    if (lesson.tutor !== name) continue
     const key = studentKey(lesson)
     const group = groups.get(key)
     if (group) group.push(lesson)
     else groups.set(key, [lesson])
+    if (!dateInMonth(lesson.date, year, month) || lesson.held !== true) continue
+    const level = lesson.level || "inne"
+    levelCounts.set(level, (levelCounts.get(level) ?? 0) + 1)
   }
   let students = 0
-  for (const group of groups.values()) {
+  for (const [key, group] of groups) {
+    if (studentActive[key] === false) continue
     if (countsAsStudent(group)) students += 1
   }
-  return {
-    students,
-    trial,
-    basic,
-    extended,
-    studies,
+  const order = ["rozszerzenie", "podstawa", "podstawowka", "studia"]
+  const levels = []
+  for (const id of order) {
+    const count = levelCounts.get(id) ?? 0
+    if (count > 0) levels.push({ id, count })
+    levelCounts.delete(id)
   }
+  for (const [id, count] of levelCounts) {
+    if (count > 0) levels.push({ id, count })
+  }
+  return { students, levels }
 }
 
 function TutorTile({ name, eyebrow, summary, active, onSelect, className = "" }) {
@@ -480,18 +494,15 @@ function TutorTile({ name, eyebrow, summary, active, onSelect, className = "" })
       <span className="mt-2 block text-sm font-medium text-stone-800">
         {summary.students} {studentsLabel(summary.students)}
       </span>
-      <span className="mt-1 block text-sm font-medium">
-        {summary.trial > 0 && (
-          <span className="block text-yellow-600">{mixLabel(summary.trial, "próbna", "próbne", "próbnych")}</span>
-        )}
-        {summary.basic > 0 && (
-          <span className="block text-blue-600">{mixLabel(summary.basic, "podstawowa", "podstawowe", "podstawowych")}</span>
-        )}
-        {summary.extended > 0 && (
-          <span className="block text-violet-600">{mixLabel(summary.extended, "rozszerzona", "rozszerzone", "rozszerzonych")}</span>
-        )}
-        {summary.studies > 0 && (
-          <span className="block text-amber-700">{mixLabel(summary.studies, "ze studiów", "ze studiów", "ze studiów")}</span>
+      <span className="mt-2 block space-y-0.5">
+        {summary.levels.length === 0 ? (
+          <span className="block text-sm text-stone-400">0 odbytych lekcji</span>
+        ) : (
+          summary.levels.map((row) => (
+            <span key={row.id} className={`block text-sm font-medium ${levelTone(row.id)}`}>
+              {row.count} {lessonsLabel(row.count)} · {labelOf(LEVELS, row.id)}
+            </span>
+          ))
         )}
       </span>
     </button>
@@ -728,6 +739,40 @@ function MoneyPanel({ lessons, today, year, month }) {
   )
 }
 
+function payoutBoard(lessons, tutors, picked) {
+  const names = tutors.filter((item) => item.countsMoney !== false).map((item) => item.name)
+  const chosen = lessons.filter((lesson) => picked.has(lesson.date) && names.includes(lesson.tutor))
+  const rows = names.map((name) => {
+    const own = chosen.filter((lesson) => lesson.tutor === name)
+    let due = 0
+    let settled = 0
+    const lines = []
+    for (const lesson of own) {
+      const stayed = stayedAfterTrial(lesson, lessons)
+      const amount = tutorPayout(lesson, stayed)
+      if (!amount) continue
+      if (lesson.tutorPaid) settled += amount
+      else {
+        due += amount
+        lines.push({ lesson, amount })
+      }
+    }
+    lines.sort((a, b) => a.lesson.date.localeCompare(b.lesson.date) || String(a.lesson.startsAt || "").localeCompare(String(b.lesson.startsAt || "")))
+    return { name, due, settled, lines }
+  })
+  const waiting = new Set()
+  for (const lesson of lessons) {
+    if (lesson.tutorPaid || !names.includes(lesson.tutor)) continue
+    if (tutorPayout(lesson, stayedAfterTrial(lesson, lessons)) > 0) waiting.add(lesson.date)
+  }
+  return {
+    rows,
+    due: rows.reduce((total, row) => total + row.due, 0),
+    settled: rows.reduce((total, row) => total + row.settled, 0),
+    waiting,
+  }
+}
+
 const SHOW_TEST_KEY = "grafik.admin.test.v1"
 
 function AdminMenu({ showTest, onShowTest }) {
@@ -822,21 +867,24 @@ export default function AdminView({
   notice,
   onLogout,
   onLessonPaid,
-  onCreateFree,
   onUpdateFree,
-  onDeleteFree,
   tutors,
   prices,
   pricesNote,
   onSavePrices,
   parents,
+  studentActive = {},
   onSaveParent,
+  onSetStudentActive,
   onRenameStudent,
   onUpdateLesson,
   onSaveRates,
 }) {
   const [year, setYear] = useState(() => new Date().getFullYear())
   const [month, setMonth] = useState(() => new Date().getMonth())
+  const [day, setDay] = useState(null)
+  const [mode, setMode] = useState("plan")
+  const [payoutDays, setPayoutDays] = useState(() => new Set())
   const regular = tutors.filter((item) => item.countsMoney !== false)
   const testAccount = tutors.find((item) => item.countsMoney === false) ?? null
   const [selected, setSelected] = useState(() => [regular[0]?.name ?? tutors[0]?.name ?? ""].filter(Boolean))
@@ -849,6 +897,33 @@ export default function AdminView({
   const activeNames = picked.length ? picked : [roster[0]?.name].filter(Boolean)
   const activeSet = new Set(activeNames)
   const visible = shownLessons.filter((lesson) => activeSet.has(lesson.tutor))
+  const hourCopy = useFreeCopy(freeHours, activeNames)
+  const payout = payoutBoard(shownLessons, tutors, payoutDays)
+
+  function focusDay(next) {
+    if (!next) {
+      setDay(null)
+      return
+    }
+    setDay(next)
+    const [nextYear, nextMonth] = next.split("-").map(Number)
+    setYear(nextYear)
+    setMonth(nextMonth - 1)
+  }
+
+  function chooseMode(next) {
+    setMode(next)
+    if (next !== "copy") hourCopy.clear()
+  }
+
+  function togglePayout(key) {
+    setPayoutDays((current) => {
+      const next = new Set(current)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
 
   function toggleTutor(name) {
     setSelected((current) => {
@@ -891,7 +966,7 @@ export default function AdminView({
               key={item.name}
               name={item.name}
               eyebrow="Korepetytor"
-              summary={tutorSummary(item.name, lessons, today)}
+              summary={tutorSummary(item.name, lessons, studentActive, year, month)}
               active={activeSet.has(item.name)}
               onSelect={() => toggleTutor(item.name)}
             />
@@ -912,7 +987,7 @@ export default function AdminView({
                   <TutorTile
                     name={testAccount.name}
                     eyebrow="konto testowe"
-                    summary={tutorSummary(testAccount.name, lessons, today)}
+                    summary={tutorSummary(testAccount.name, lessons, studentActive, year, month)}
                     active={activeSet.has(testAccount.name)}
                     onSelect={() => toggleTutor(testAccount.name)}
                     className="pr-10"
@@ -967,15 +1042,6 @@ export default function AdminView({
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.2 }}
       >
-        <FreeHours
-          tutor={activeNames[0] ?? ""}
-          tutors={activeNames}
-          hours={freeHours}
-          canEdit={activeNames.length === 1}
-          onCreate={(entries) => onCreateFree(activeNames[0], entries)}
-          onUpdate={(id, data) => onUpdateFree(activeNames[0], id, data)}
-          onDelete={(id) => onDeleteFree(activeNames[0], id)}
-        />
         <CalendarBoard
           person={activeNames.join(", ")}
           people={activeNames}
@@ -996,11 +1062,43 @@ export default function AdminView({
             if (lesson) return onUpdateLesson(lesson.tutor, id, data)
           }}
           parents={parents}
+          studentActive={studentActive}
           onSaveParent={onSaveParent}
+          onSetStudentActive={onSetStudentActive}
           onRenameStudent={onRenameStudent}
           onUpdateFree={(id, data) => {
             const slot = freeHours.find((item) => item.id === id)
             if (slot) return onUpdateFree(slot.tutor, id, data)
+          }}
+          day={day}
+          onDayChange={focusDay}
+          mode={mode}
+          onMode={chooseMode}
+          payout={{
+            days: payoutDays,
+            onToggle: togglePayout,
+            onClear: () => setPayoutDays(new Set()),
+            waiting: payout.waiting,
+            rows: payout.rows,
+            due: payout.due,
+            settled: payout.settled,
+          }}
+          copy={{
+            days: hourCopy.copyDays,
+            marked: hourCopy.marked,
+            onToggle: hourCopy.toggle,
+            onSpan: (count) => {
+              const first = hourCopy.pickSpan(count)
+              if (!first) return
+              const [nextYear, nextMonth] = first.split("-").map(Number)
+              setYear(nextYear)
+              setMonth(nextMonth - 1)
+            },
+            spanActive: hourCopy.spanActive,
+            onCopy: hourCopy.copyChosen,
+            onClose: () => chooseMode("plan"),
+            copied: hourCopy.copied,
+            error: hourCopy.copyError,
           }}
         />
       </motion.div>

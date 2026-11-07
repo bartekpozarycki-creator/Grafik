@@ -1,94 +1,9 @@
 import { useEffect, useState } from "react"
 import { motion } from "framer-motion"
 import { isExpiredFreeHour } from "../lib/availability"
-import { WEEKDAYS, addDays, buildMonthCells, dateKey, formatShort, monthTitle, todayKey, weeklyDates } from "../lib/store"
+import { addDays, formatShort, todayKey, weeklyDates } from "../lib/store"
 
 const WEEKDAY_NAMES = ["Poniedziałek", "Wtorek", "Środa", "Czwartek", "Piątek", "Sobota", "Niedziela"]
-
-function formatClock(date) {
-  const day = new Intl.DateTimeFormat("pl-PL", {
-    weekday: "long",
-    day: "numeric",
-    month: "long",
-    year: "numeric",
-  }).format(date)
-  const time = new Intl.DateTimeFormat("pl-PL", { hour: "2-digit", minute: "2-digit" }).format(date)
-  return `${day.charAt(0).toUpperCase()}${day.slice(1)}, ${time}`
-}
-
-function MiniMonth({ year, month, selected, picked, marked, onMonth, onPick }) {
-  const cells = buildMonthCells(year, month)
-  const today = todayKey()
-  const busyColumns = new Set()
-  cells.forEach((day, index) => {
-    if (day != null && marked.has(dateKey(year, month, day))) busyColumns.add(index % 7)
-  })
-  return (
-    <div className="w-full sm:w-96">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <p className="text-sm font-semibold text-stone-900">{monthTitle(year, month)}</p>
-        <div className="flex gap-1">
-          <button
-            type="button"
-            aria-label="Poprzedni miesiąc"
-            onClick={() => onMonth(-1)}
-            className="flex h-8 w-8 items-center justify-center rounded-lg border border-stone-200 text-stone-700 hover:bg-stone-50"
-          >
-            ‹
-          </button>
-          <button
-            type="button"
-            aria-label="Następny miesiąc"
-            onClick={() => onMonth(1)}
-            className="flex h-8 w-8 items-center justify-center rounded-lg border border-stone-200 text-stone-700 hover:bg-stone-50"
-          >
-            ›
-          </button>
-        </div>
-      </div>
-      <div className="mb-1 grid grid-cols-7 gap-1">
-        {WEEKDAYS.map((label, index) => (
-          <span
-            key={label}
-            className={`text-center text-xs font-semibold ${busyColumns.has(index) ? "text-blue-600" : "text-stone-400"}`}
-          >
-            {label}
-          </span>
-        ))}
-      </div>
-      <div className="grid grid-cols-7 gap-1">
-        {cells.map((day, index) => {
-          if (day == null) return <div key={`empty-${index}`} />
-          const key = dateKey(year, month, day)
-          const active = picked ? picked.has(key) : key === selected
-          const isToday = key === today
-          const hasHours = marked.has(key)
-          return (
-            <button
-              key={key}
-              type="button"
-              onClick={() => onPick(key)}
-              aria-pressed={picked ? picked.has(key) : undefined}
-              className={`flex h-12 w-full items-center justify-center rounded-xl text-base font-semibold ${
-                active
-                  ? hasHours
-                    ? "bg-blue-600 text-white"
-                    : "bg-teal-800 text-white"
-                  : hasHours
-                    ? "text-blue-600 hover:bg-blue-50"
-                    : isToday
-                      ? "bg-stone-200 text-stone-900"
-                      : "text-stone-700 hover:bg-stone-100"
-              }`}
-            >
-              {day}
-            </button>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
 
 function toMinutes(value) {
   const [hour, minute] = String(value).split(":").map(Number)
@@ -151,12 +66,17 @@ function sharedGroups(slots, tutorNames) {
   return result
 }
 
+function dayAndMonth(key) {
+  const [, month, day] = key.split("-").map(Number)
+  return `${day}.${month}`
+}
+
 function hoursText(groups) {
   return groups
     .map((group) => {
       const start = Math.min(...group.slots.map((slot) => toMinutes(slot.startsAt)))
       const end = Math.max(...group.slots.map((slot) => toMinutes(slot.endsAt)))
-      return `${weekdayName(group.date).toLowerCase()} ${fromMinutes(start)}-${fromMinutes(end)}`
+      return `${weekdayName(group.date).toLowerCase()} ${dayAndMonth(group.date)} ${fromMinutes(start)}-${fromMinutes(end)}`
     })
     .join(", ")
 }
@@ -217,97 +137,33 @@ export function StatusBadge({ taking }) {
   )
 }
 
-export function FreeHours({ tutor, tutors, hours, canEdit, onCreate, onUpdate, onDelete }) {
-  const [date, setDate] = useState(() => todayKey())
-  const [startsAt, setStartsAt] = useState("15:00")
-  const [endsAt, setEndsAt] = useState("18:00")
-  const [repeat, setRepeat] = useState(false)
-  const [until, setUntil] = useState("")
-  const [editingId, setEditingId] = useState(null)
-  const [error, setError] = useState("")
-  const [saving, setSaving] = useState(false)
-  const [confirmId, setConfirmId] = useState(null)
-  const [expanded, setExpanded] = useState(false)
-  const [now, setNow] = useState(() => new Date())
-  const [pickerYear, setPickerYear] = useState(() => new Date().getFullYear())
-  const [pickerMonth, setPickerMonth] = useState(() => new Date().getMonth())
-  const [copying, setCopying] = useState(false)
+export function useFreeCopy(hours, names) {
   const [copyDays, setCopyDays] = useState(() => new Set())
   const [copied, setCopied] = useState(false)
   const [copyError, setCopyError] = useState("")
-  const names = tutors?.length ? tutors : [tutor]
-  const allowed = new Set(names)
-  const several = names.length > 1
-  const mine = hours
-    .filter((slot) => allowed.has(slot.tutor) && !isExpiredFreeHour(slot, now.getTime()))
-    .sort((a, b) => a.date.localeCompare(b.date) || a.startsAt.localeCompare(b.startsAt))
-  const ownGroups = []
-  for (const slot of mine) {
-    const last = ownGroups[ownGroups.length - 1]
-    if (!last || last.date !== slot.date) ownGroups.push({ date: slot.date, slots: [slot] })
+  const allowed = new Set(names ?? [])
+  const groups = []
+  for (const slot of hours
+    .filter((item) => allowed.has(item.tutor) && !isExpiredFreeHour(item))
+    .sort((a, b) => a.date.localeCompare(b.date) || a.startsAt.localeCompare(b.startsAt))) {
+    const last = groups[groups.length - 1]
+    if (!last || last.date !== slot.date) groups.push({ date: slot.date, slots: [slot] })
     else last.slots.push(slot)
   }
-  const groups = ownGroups
-  const shared = several ? sharedGroups(mine, names) : []
   const marked = new Set(groups.map((group) => group.date))
-  const slotCount = groups.reduce((sum, group) => sum + group.slots.length, 0)
-  const collapsed = slotCount > 4 && !expanded
-  let visibleGroups = groups
-  if (collapsed) {
-    const kept = []
-    let count = 0
-    for (const group of groups) {
-      if (count >= 4) break
-      kept.push(group)
-      count += group.slots.length
-    }
-    for (const group of groups) {
-      if ((group.date === date || copyDays.has(group.date)) && !kept.some((item) => item.date === group.date)) {
-        kept.push(group)
-      }
-    }
-    visibleGroups = kept.sort((a, b) => a.date.localeCompare(b.date))
+
+  function remember(nextDays) {
+    setCopyDays(nextDays)
+    setCopied(false)
+    setCopyError("")
   }
 
-  function beginEdit(slot) {
-    setEditingId(slot.id)
-    chooseDate(slot.date)
-    setStartsAt(slot.startsAt)
-    setEndsAt(slot.endsAt)
-    setRepeat(false)
-    setConfirmId(null)
-    setError("")
-  }
-
-  function cancelEdit() {
-    setEditingId(null)
-    setError("")
-  }
-
-  function chooseDate(next) {
-    setDate(next)
-    const [year, month] = next.split("-").map(Number)
-    setPickerYear(year)
-    setPickerMonth(month - 1)
-  }
-
-  function pickDay(next) {
-    if (copying) {
-      if (!marked.has(next)) return
-      setCopyDays((current) => {
-        const nextDays = new Set(current)
-        if (nextDays.has(next)) nextDays.delete(next)
-        else nextDays.add(next)
-        return nextDays
-      })
-      setCopied(false)
-      setCopyError("")
-      return
-    }
-    chooseDate(next)
-    setEditingId(null)
-    setConfirmId(null)
-    setError("")
+  function toggle(next) {
+    if (!marked.has(next)) return
+    const nextDays = new Set(copyDays)
+    if (nextDays.has(next)) nextDays.delete(next)
+    else nextDays.add(next)
+    remember(nextDays)
   }
 
   function upcomingDays(count) {
@@ -317,15 +173,13 @@ export function FreeHours({ tutor, tutors, hours, canEdit, onCreate, onUpdate, o
 
   function pickSpan(count) {
     const days = upcomingDays(count)
-    setCopyDays(new Set(days))
-    setCopied(false)
-    setCopyError("")
-    if (days[0]) chooseDate(days[0])
+    remember(new Set(days))
+    return days[0] ?? null
   }
 
   function spanActive(count) {
     const days = upcomingDays(count)
-    return days.length === count && days.length === copyDays.size && days.every((day) => copyDays.has(day))
+    return days.length === count && days.length === copyDays.size && days.every((item) => copyDays.has(item))
   }
 
   async function copyChosen() {
@@ -354,17 +208,174 @@ export function FreeHours({ tutor, tutors, hours, canEdit, onCreate, onUpdate, o
     setCopyError("")
   }
 
-  function closeCopy() {
-    setCopying(false)
+  function clear() {
     setCopyDays(new Set())
     setCopied(false)
     setCopyError("")
   }
 
-  function shiftPicker(delta) {
-    const next = new Date(pickerYear, pickerMonth + delta, 1)
-    setPickerYear(next.getFullYear())
-    setPickerMonth(next.getMonth())
+  return { marked, copyDays, copied, copyError, toggle, pickSpan, spanActive, copyChosen, clear }
+}
+
+function clockMinutes(value) {
+  const [hour, minute] = String(value).slice(0, 5).split(":").map(Number)
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null
+  return hour * 60 + minute
+}
+
+export function useFreeAdd(onCreate) {
+  const [entries, setEntries] = useState([])
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState("")
+  const [saved, setSaved] = useState(false)
+  const days = new Set(entries.map((entry) => entry.date))
+
+  function toggle(date) {
+    if (date < todayKey()) return
+    setSaved(false)
+    setError("")
+    setEntries((current) => {
+      if (current.some((entry) => entry.date === date)) return current.filter((entry) => entry.date !== date)
+      return [...current, { date, startsAt: "15:00", endsAt: "18:00" }].sort((left, right) => left.date.localeCompare(right.date))
+    })
+  }
+
+  function setHours(date, field, value) {
+    setSaved(false)
+    setError("")
+    setEntries((current) => current.map((entry) => (entry.date === date ? { ...entry, [field]: value } : entry)))
+  }
+
+  async function submit() {
+    if (!entries.length || busy) return false
+    for (const entry of entries) {
+      const start = clockMinutes(entry.startsAt)
+      const end = clockMinutes(entry.endsAt)
+      if (start == null || end == null || end <= start) {
+        setSaved(false)
+        setError("Godzina końca musi być późniejsza niż początek.")
+        return false
+      }
+      if (end - start < 45) {
+        setSaved(false)
+        setError("Wolne godziny muszą trwać co najmniej 45 minut.")
+        return false
+      }
+    }
+    setBusy(true)
+    setError("")
+    try {
+      await onCreate(entries.map((entry) => ({ date: entry.date, startsAt: entry.startsAt, endsAt: entry.endsAt })))
+      setSaved(true)
+      setEntries([])
+      return true
+    } catch (err) {
+      setSaved(false)
+      setError(err.message || "Nie udało się dodać wolnych godzin.")
+      return false
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function clear() {
+    setEntries([])
+    setBusy(false)
+    setError("")
+    setSaved(false)
+  }
+
+  return { days, entries, setHours, busy, error, saved, toggle, submit, clear }
+}
+
+export function FreeHours({
+  tutor,
+  tutors,
+  hours,
+  canEdit,
+  onCreate,
+  onUpdate,
+  onDelete,
+  date = null,
+  onDateChange,
+  copying = false,
+  copyDays = new Set(),
+  onPickDay,
+}) {
+  const [ownDate, setOwnDate] = useState(() => todayKey())
+  const [startsAt, setStartsAt] = useState("15:00")
+  const [endsAt, setEndsAt] = useState("18:00")
+  const [repeat, setRepeat] = useState(false)
+  const [until, setUntil] = useState("")
+  const [editingId, setEditingId] = useState(null)
+  const [error, setError] = useState("")
+  const [saving, setSaving] = useState(false)
+  const [confirmId, setConfirmId] = useState(null)
+  const [expanded, setExpanded] = useState(false)
+  const [now, setNow] = useState(() => new Date())
+  const formDate = date || ownDate
+  const names = tutors?.length ? tutors : [tutor]
+  const allowed = new Set(names)
+  const several = names.length > 1
+  const mine = hours
+    .filter((slot) => allowed.has(slot.tutor) && !isExpiredFreeHour(slot, now.getTime()))
+    .sort((a, b) => a.date.localeCompare(b.date) || a.startsAt.localeCompare(b.startsAt))
+  const ownGroups = []
+  for (const slot of mine) {
+    const last = ownGroups[ownGroups.length - 1]
+    if (!last || last.date !== slot.date) ownGroups.push({ date: slot.date, slots: [slot] })
+    else last.slots.push(slot)
+  }
+  const groups = ownGroups
+  const shared = several ? sharedGroups(mine, names) : []
+  const slotCount = groups.reduce((sum, group) => sum + group.slots.length, 0)
+  const collapsed = slotCount > 4 && !expanded
+  let visibleGroups = groups
+  if (collapsed) {
+    const kept = []
+    let count = 0
+    for (const group of groups) {
+      if (count >= 4) break
+      kept.push(group)
+      count += group.slots.length
+    }
+    for (const group of groups) {
+      if ((group.date === formDate || copyDays.has(group.date)) && !kept.some((item) => item.date === group.date)) {
+        kept.push(group)
+      }
+    }
+    visibleGroups = kept.sort((a, b) => a.date.localeCompare(b.date))
+  }
+
+  function beginEdit(slot) {
+    setEditingId(slot.id)
+    chooseDate(slot.date)
+    setStartsAt(slot.startsAt)
+    setEndsAt(slot.endsAt)
+    setRepeat(false)
+    setConfirmId(null)
+    setError("")
+  }
+
+  function cancelEdit() {
+    setEditingId(null)
+    setError("")
+  }
+
+  function chooseDate(next) {
+    setOwnDate(next)
+    onDateChange?.(next)
+  }
+
+  function pickDay(next) {
+    if (onPickDay) {
+      onPickDay(next)
+      return
+    }
+    chooseDate(next)
+    setEditingId(null)
+    setConfirmId(null)
+    setError("")
   }
 
   useEffect(() => {
@@ -384,7 +395,7 @@ export function FreeHours({ tutor, tutors, hours, canEdit, onCreate, onUpdate, o
   async function submit(event) {
     event.preventDefault()
     if (saving) return
-    if (!date) {
+    if (!formDate) {
       setError("Wybierz dzień.")
       return
     }
@@ -392,11 +403,11 @@ export function FreeHours({ tutor, tutors, hours, canEdit, onCreate, onUpdate, o
       setError("Godzina końca musi być późniejsza niż początek.")
       return
     }
-    if (!editingId && repeat && (!until || until < date)) {
+    if (!editingId && repeat && (!until || until < formDate)) {
       setError("Wybierz datę końca powtórzenia, nie wcześniejszą niż początek.")
       return
     }
-    const dates = !editingId && repeat ? weeklyDates(date, until) : [date]
+    const dates = !editingId && repeat ? weeklyDates(formDate, until) : [formDate]
     if (!editingId && repeat && addDays(dates[dates.length - 1], 7) <= until) {
       setError("Jedno powtórzenie może mieć najwyżej 40 tygodni.")
       return
@@ -405,7 +416,7 @@ export function FreeHours({ tutor, tutors, hours, canEdit, onCreate, onUpdate, o
     setError("")
     try {
       if (editingId) {
-        await onUpdate(editingId, { date, startsAt, endsAt })
+        await onUpdate(editingId, { date: formDate, startsAt, endsAt })
         setEditingId(null)
       } else {
         await onCreate(dates.map((day) => ({ date: day, startsAt, endsAt })))
@@ -433,26 +444,8 @@ export function FreeHours({ tutor, tutors, hours, canEdit, onCreate, onUpdate, o
 
   return (
     <section className="mb-4 rounded-3xl border border-stone-200 bg-white p-4 shadow-sm sm:p-5">
-      <div className="flex items-start justify-between gap-4">
-        <h2 className="text-lg font-semibold text-stone-900">Wolne godziny</h2>
-        <p className="text-right text-sm font-medium text-stone-800">
-          {formatClock(now)}
-          <span className="mt-0.5 block text-xs font-normal text-stone-500">teraźniejsza data</span>
-        </p>
-      </div>
-      <div className="mt-4 grid items-start gap-4 border-t border-stone-200 pt-4 lg:grid-cols-[auto_minmax(0,1fr)]">
-        <div className="rounded-2xl border border-stone-200 bg-stone-50 p-3">
-          <MiniMonth
-            year={pickerYear}
-            month={pickerMonth}
-            selected={copying ? "" : date}
-            picked={copying ? copyDays : null}
-            marked={marked}
-            onMonth={shiftPicker}
-            onPick={pickDay}
-          />
-        </div>
-        <div className="min-w-0">
+      <h2 className="text-lg font-semibold text-stone-900">Wolne godziny</h2>
+      <div className="mt-4 border-t border-stone-200 pt-4">
         <div className="rounded-2xl border border-stone-200 p-3 sm:p-4">
           {!canEdit && (
             <p className="text-sm text-stone-500">
@@ -466,11 +459,11 @@ export function FreeHours({ tutor, tutors, hours, canEdit, onCreate, onUpdate, o
               <div className="grid gap-3 sm:grid-cols-[minmax(0,1.4fr)_auto_auto_auto] sm:items-end">
                 <label className="block">
                   <span className="mb-1.5 block text-sm font-medium text-stone-700">
-                    Dzień{date ? ` · ${weekdayName(date)}` : ""}
+                    Dzień{formDate ? ` · ${weekdayName(formDate)}` : ""}
                   </span>
                   <input
                     type="date"
-                    value={date}
+                    value={formDate}
                     onChange={(event) => chooseDate(event.target.value)}
                     className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2.5 text-sm outline-none ring-teal-800 focus:ring-2"
                   />
@@ -510,7 +503,7 @@ export function FreeHours({ tutor, tutors, hours, canEdit, onCreate, onUpdate, o
                       onChange={(event) => {
                         const next = event.target.checked
                         setRepeat(next)
-                        if (next && !until) setUntil(addDays(date, 28))
+                        if (next && !until) setUntil(addDays(formDate, 28))
                       }}
                       className="accent-teal-800"
                     />
@@ -521,7 +514,7 @@ export function FreeHours({ tutor, tutors, hours, canEdit, onCreate, onUpdate, o
                       Do dnia{until ? ` · ${weekdayName(until)}` : ""}
                       <input
                         type="date"
-                        min={date}
+                        min={formDate}
                         value={until}
                         onChange={(event) => setUntil(event.target.value)}
                         className="rounded-xl border border-stone-300 bg-white px-3 py-2.5 text-sm outline-none ring-teal-800 focus:ring-2"
@@ -537,60 +530,6 @@ export function FreeHours({ tutor, tutors, hours, canEdit, onCreate, onUpdate, o
               )}
             </form>
           )}
-        </div>
-        {!copying ? (
-          <button
-            type="button"
-            onClick={() => {
-              setCopying(true)
-              setCopied(false)
-              setCopyError("")
-              setCopyDays(new Set())
-            }}
-            className="mt-3 rounded-xl border border-stone-300 bg-white px-4 py-2.5 text-sm font-semibold text-stone-800 transition hover:bg-stone-50"
-          >
-            Skopiuj wolne godziny
-          </button>
-        ) : (
-          <motion.div
-            initial={{ opacity: 0, y: 6 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.18 }}
-            className="mt-3 rounded-2xl border border-stone-200 bg-stone-50 p-3"
-          >
-            <p className="text-sm text-stone-600">Wybierz dni w kalendarzu albo skrót.</p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              {[2, 3, 4, 5].map((count) => (
-                <button
-                  key={count}
-                  type="button"
-                  aria-pressed={spanActive(count)}
-                  onClick={() => pickSpan(count)}
-                  className={`rounded-xl px-3 py-2 text-sm font-semibold transition ${
-                    spanActive(count) ? "bg-teal-800 text-white" : "bg-white text-stone-800 hover:bg-stone-100"
-                  }`}
-                >
-                  {count} dni
-                </button>
-              ))}
-            </div>
-            <div className="mt-3 flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={copyChosen}
-                disabled={copyDays.size === 0}
-                className="rounded-xl bg-teal-800 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-teal-900 disabled:opacity-60"
-              >
-                Kopiuj
-              </button>
-              <button type="button" onClick={closeCopy} className="rounded-xl px-3 py-2 text-sm font-medium text-stone-500">
-                Anuluj
-              </button>
-              {copied && <span className="text-sm font-medium text-teal-800">Skopiowano.</span>}
-              {copyError && <span className="text-sm text-red-700">{copyError}</span>}
-            </div>
-          </motion.div>
-        )}
         </div>
       </div>
       {error && <p className="mt-3 text-sm text-red-700">{error}</p>}
@@ -631,7 +570,7 @@ export function FreeHours({ tutor, tutors, hours, canEdit, onCreate, onUpdate, o
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.2 }}
               className={`flex flex-wrap items-baseline gap-x-3 gap-y-1 px-3 py-2.5 ${
-                copying && copyDays.has(group.date) ? "bg-blue-50" : group.date === date ? "bg-blue-50" : ""
+                copying && copyDays.has(group.date) ? "bg-blue-50" : group.date === formDate ? "bg-blue-50" : ""
               }`}
             >
               <button

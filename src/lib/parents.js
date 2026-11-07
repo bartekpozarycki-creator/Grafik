@@ -11,6 +11,7 @@ function fromRow(row) {
   return {
     studentKey: row.student_key,
     info: row.info ?? "",
+    active: row.active !== false,
   }
 }
 
@@ -23,7 +24,29 @@ export async function fetchParents() {
   if (!supabase) throw new Error("Brak konfiguracji Supabase.")
   const { data, error } = await supabase.from("student_parents").select("*")
   if (error) fail(error, "Nie udało się wczytać danych rodziców.")
-  return Object.fromEntries((data ?? []).map((row) => [row.student_key, fromRow(row).info]))
+  const parents = {}
+  const active = {}
+  for (const row of data ?? []) {
+    const item = fromRow(row)
+    parents[item.studentKey] = item.info
+    if (!item.active) active[item.studentKey] = false
+  }
+  return { parents, active }
+}
+
+export async function saveStudentActive(studentKey, active) {
+  if (!supabase) throw new Error("Brak konfiguracji Supabase.")
+  const row = {
+    student_key: studentKey,
+    active: Boolean(active),
+    updated_at: new Date().toISOString(),
+  }
+  const { data, error } = await supabase.from("student_parents").upsert(row).select("*").single()
+  if (error?.code === "PGRST204" || error?.code === "42703") {
+    throw new Error("Status ucznia nie jest jeszcze gotowy w Supabase. Uruchom plik supabase/student_status.sql.")
+  }
+  if (error) fail(error, "Nie udało się zapisać statusu ucznia.")
+  return fromRow(data).active
 }
 
 export async function deleteParent(studentKey) {
